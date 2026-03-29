@@ -13,6 +13,13 @@ INSTALL_DIR="/opt/nixpanel"
 REPO_URL="https://github.com/NixPanel/nixpanel.git"
 LOG_FILE="/tmp/nixpanel-install.log"
 
+# ─── Global state ─────────────────────────────────────────────────────────────
+ADMIN_USERNAME=""
+ADMIN_EMAIL=""
+ADMIN_PASSWORD=""   # kept in memory only; never logged or displayed after setup
+DOMAIN=""
+SERVER_IP=""
+
 # ─── Colors ──────────────────────────────────────────────────────────────────
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -343,10 +350,18 @@ verify_install_dir() {
     ok "Install directory verified: ${INSTALL_DIR}"
 }
 
+# ─── Safe .env writer (no sed substitution; handles special chars in values) ──
+write_env_var() {
+    local key="$1" val="$2"
+    # Delete existing line, then append — value never touches a regex
+    sed -i "/^${key}=/d" "${INSTALL_DIR}/.env"
+    printf '%s=%s\n' "$key" "$val" >> "${INSTALL_DIR}/.env"
+}
+
 # ─── Setup .env ───────────────────────────────────────────────────────────────
 setup_env() {
     if [ -f "${INSTALL_DIR}/.env" ]; then
-        ok ".env already exists, skipping"
+        ok ".env already exists, skipping base setup"
         return 0
     fi
 
@@ -363,6 +378,53 @@ setup_env() {
     fi
 
     ok ".env created. Review and set ANTHROPIC_API_KEY if you want AI features."
+}
+
+# ─── Collect admin account details ───────────────────────────────────────────
+setup_admin_account() {
+    echo ""
+    echo -e "${BOLD}┌─────────────────────────────────────┐${NC}"
+    echo -e "${BOLD}│        Create Admin Account         │${NC}"
+    echo -e "${BOLD}└─────────────────────────────────────┘${NC}"
+
+    # Username (default: admin)
+    read -rp "Admin username [admin]: " ADMIN_USERNAME </dev/tty || ADMIN_USERNAME=""
+    ADMIN_USERNAME="${ADMIN_USERNAME:-admin}"
+    ADMIN_USERNAME="${ADMIN_USERNAME// /}"
+
+    # Email (required)
+    while true; do
+        read -rp "Admin email: " ADMIN_EMAIL </dev/tty || ADMIN_EMAIL=""
+        ADMIN_EMAIL="${ADMIN_EMAIL// /}"
+        [ -n "$ADMIN_EMAIL" ] && break
+        warn "Email address is required."
+    done
+
+    # Password with length check and confirmation
+    while true; do
+        read -rsp "Admin password (min 8 chars): " ADMIN_PASSWORD </dev/tty || ADMIN_PASSWORD=""
+        echo ""
+        if [ "${#ADMIN_PASSWORD}" -lt 8 ]; then
+            warn "Password must be at least 8 characters. Try again."
+            continue
+        fi
+        local pw_confirm
+        read -rsp "Confirm password: " pw_confirm </dev/tty || pw_confirm=""
+        echo ""
+        if [ "$ADMIN_PASSWORD" = "$pw_confirm" ]; then
+            unset pw_confirm
+            break
+        fi
+        warn "Passwords do not match. Try again."
+        unset pw_confirm
+    done
+
+    # Write to .env — password is never echoed to log
+    write_env_var "ADMIN_USERNAME" "$ADMIN_USERNAME"
+    write_env_var "ADMIN_EMAIL"    "$ADMIN_EMAIL"
+    write_env_var "ADMIN_PASSWORD" "$ADMIN_PASSWORD"
+
+    ok "Admin account configured"
 }
 
 # ─── Install server deps ──────────────────────────────────────────────────────
@@ -431,6 +493,114 @@ setup_pm2_startup() {
     log "Manage with: pm2 {start|stop|restart|status|logs} nixpanel"
 }
 
+# ─── Ask for domain name ──────────────────────────────────────────────────────
+ask_domain() {
+    echo ""
+    read -rp "Enter your domain name (leave blank to use IP address): " DOMAIN </dev/tty || DOMAIN=""
+    DOMAIN="${DOMAIN// /}"  # strip spaces
+
+    if [ -z "$DOMAIN" ]; then
+        SERVER_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "")
+        if [ -z "$SERVER_IP" ]; then
+            SERVER_IP=$(curl -s --max-time 5 ifconfig.me 2>/dev/null || echo "localhost")
+        fi
+        log "No domain provided - will use IP: ${SERVER_IP}"
+    else
+        ok "Domain: ${DOMAIN}"
+    fi
+}
+
+# ─── Install and configure Nginx reverse proxy ───────────────────────────────
+setup_nginx() {
+    if ! command -v nginx > /dev/null 2>&1; then
+        arrow "nginx not found - installing..."
+        pkg_install nginx || {
+            err "Failed to install nginx. Check ${LOG_FILE} for details."
+            exit 1
+        }
+        ok "nginx installed"
+    else
+        ok "nginx already installed"
+    fi
+
+    local port
+    port=$(grep -E "^PORT=" "${INSTALL_DIR}/.env" 2>/dev/null | cut -d= -f2 || echo "3001")
+
+    local server_name
+    if [ -n "$DOMAIN" ]; then
+        server_name="$DOMAIN"
+    else
+        server_name="_"
+    fi
+
+    local conf_file
+    if [ "$OS_FAMILY" = "rhel" ]; then
+        conf_file="/etc/nginx/conf.d/nixpanel.conf"
+    else
+        conf_file="/etc/nginx/sites-available/nixpanel"
+    fi
+
+    log "Writing nginx reverse proxy config to ${conf_file}..."
+    cat > "$conf_file" << 'NGINXEOF'
+server {
+    listen 80;
+    server_name NIXPANEL_SERVER_NAME;
+
+    location / {
+        proxy_pass http://127.0.0.1:NIXPANEL_PORT;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_cache_bypass $http_upgrade;
+    }
+}
+NGINXEOF
+    sed -i "s/NIXPANEL_SERVER_NAME/${server_name}/" "$conf_file"
+    sed -i "s/NIXPANEL_PORT/${port}/" "$conf_file"
+
+    if [ "$OS_FAMILY" = "debian" ]; then
+        ln -sf "$conf_file" /etc/nginx/sites-enabled/nixpanel 2>/dev/null || true
+        rm -f /etc/nginx/sites-enabled/default 2>/dev/null || true
+    fi
+
+    nginx -t >> "$LOG_FILE" 2>&1 || {
+        err "nginx config test failed. Check ${LOG_FILE} for details."
+        exit 1
+    }
+
+    systemctl enable nginx >> "$LOG_FILE" 2>&1 || true
+    systemctl restart nginx >> "$LOG_FILE" 2>&1 || {
+        err "Failed to start nginx. Check: systemctl status nginx"
+        exit 1
+    }
+
+    ok "nginx configured and started"
+}
+
+# ─── Open firewall ports ──────────────────────────────────────────────────────
+configure_firewall() {
+    if command -v firewall-cmd > /dev/null 2>&1 && systemctl is-active --quiet firewalld 2>/dev/null; then
+        log "Configuring firewalld..."
+        firewall-cmd --permanent --add-port=80/tcp  >> "$LOG_FILE" 2>&1 || true
+        firewall-cmd --permanent --add-port=443/tcp >> "$LOG_FILE" 2>&1 || true
+        firewall-cmd --permanent --add-port=3001/tcp >> "$LOG_FILE" 2>&1 || true
+        firewall-cmd --reload >> "$LOG_FILE" 2>&1 || true
+        ok "Firewall configured (firewalld)"
+    elif command -v ufw > /dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
+        log "Configuring ufw..."
+        ufw allow 80/tcp   >> "$LOG_FILE" 2>&1 || true
+        ufw allow 443/tcp  >> "$LOG_FILE" 2>&1 || true
+        ufw allow 3001/tcp >> "$LOG_FILE" 2>&1 || true
+        ok "Firewall configured (ufw)"
+    else
+        warn "No active firewall detected (firewalld/ufw) - skipping"
+    fi
+}
+
 # ─── Main ─────────────────────────────────────────────────────────────────────
 main() {
     > "$LOG_FILE"
@@ -455,32 +625,38 @@ main() {
     cd "${INSTALL_DIR}"
 
     setup_env
+    setup_admin_account
     install_server
     install_client
+    ask_domain
+    setup_nginx
+    configure_firewall
     setup_pm2_startup
 
-    local port admin_user
+    local port access_url
     port=$(grep -E "^PORT=" "${INSTALL_DIR}/.env" 2>/dev/null | cut -d= -f2 || echo "3001")
-    admin_user=$(grep -E "^ADMIN_USERNAME=" "${INSTALL_DIR}/.env" 2>/dev/null | cut -d= -f2 || echo "admin")
+
+    if [ -n "$DOMAIN" ]; then
+        access_url="https://${DOMAIN}"
+    else
+        access_url="http://${SERVER_IP:-localhost}:${port}"
+    fi
 
     echo ""
     echo -e "${BOLD}${GREEN}╔══════════════════════════════════════════╗${NC}"
     echo -e "${BOLD}${GREEN}║         Installation Complete!           ║${NC}"
     echo -e "${BOLD}${GREEN}╠══════════════════════════════════════════╣${NC}"
     echo -e "${BOLD}${GREEN}║                                          ║${NC}"
-    echo -e "${BOLD}${GREEN}║  Dir:    ${INSTALL_DIR}              ║${NC}"
+    printf "${BOLD}${GREEN}║  URL:   %-33s║${NC}\n" "${access_url}"
+    printf "${BOLD}${GREEN}║  User:  %-33s║${NC}\n" "${ADMIN_USERNAME}"
+    printf "${BOLD}${GREEN}║  Email: %-33s║${NC}\n" "${ADMIN_EMAIL}"
     echo -e "${BOLD}${GREEN}║                                          ║${NC}"
-    echo -e "${BOLD}${GREEN}║  Start:  pm2 start server/index.js       ║${NC}"
-    echo -e "${BOLD}${GREEN}║  Or:     node server/index.js            ║${NC}"
-    echo -e "${BOLD}${GREEN}║                                          ║${NC}"
-    printf "${BOLD}${GREEN}║  URL:    http://localhost:%-16s║${NC}\n" "${port}"
-    printf "${BOLD}${GREEN}║  User:   %-32s║${NC}\n" "${admin_user}"
-    echo -e "${BOLD}${GREEN}║  Pass:   (set ADMIN_PASSWORD in .env)    ║${NC}"
-    echo -e "${BOLD}${GREEN}║                                          ║${NC}"
-    echo -e "${BOLD}${GREEN}║  ! Change default password on first      ║${NC}"
-    echo -e "${BOLD}${GREEN}║    login!                                ║${NC}"
+    echo -e "${BOLD}${GREEN}║  Keep your password safe!                ║${NC}"
     echo -e "${BOLD}${GREEN}╚══════════════════════════════════════════╝${NC}"
     echo ""
+    if [ -n "$DOMAIN" ]; then
+        warn "SSL not yet configured. Run: certbot --nginx -d ${DOMAIN}"
+    fi
 }
 
 main "$@"

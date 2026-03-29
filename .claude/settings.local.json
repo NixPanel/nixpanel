@@ -11,7 +11,8 @@
       "Bash(curl:*)",
       "Bash(ls /root/nixpanel/client/src/pages/ echo \"---\" grep \"KeyRound\\\\|ShieldCheck\\\\|Archive\\\\|Clock\" /root/nixpanel/client/src/components/Sidebar.jsx)",
       "Bash(ls:*)",
-      "Bash(tail -1 grep -c \"isPro\\\\|requirePro\\\\|ProBadge\\\\|LicenseContext\\\\|upgrade\" /root/nixpanel/client/dist/assets/index-*.js)"
+      "Bash(tail -1 grep -c \"isPro\\\\|requirePro\\\\|ProBadge\\\\|LicenseContext\\\\|upgrade\" /root/nixpanel/client/dist/assets/index-*.js)",
+      "Bash(bash -n /root/nixpanel/install.sh)"
     ]
   }
 }

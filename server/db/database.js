@@ -121,12 +121,13 @@ function initializeDatabase() {
   if (userCount.count === 0) {
     const adminPassword = process.env.ADMIN_PASSWORD || 'changeme123';
     const adminUsername = process.env.ADMIN_USERNAME || 'admin';
+    const adminEmail = process.env.ADMIN_EMAIL || 'admin@localhost';
     const hash = bcrypt.hashSync(adminPassword, 12);
 
     database.prepare(`
       INSERT INTO users (username, password_hash, role, email)
-      VALUES (?, ?, 'admin', 'admin@localhost')
-    `).run(adminUsername, hash);
+      VALUES (?, ?, 'admin', ?)
+    `).run(adminUsername, hash, adminEmail);
 
     console.log(`[DB] Default admin user created: ${adminUsername}`);
     console.log('[DB] IMPORTANT: Change the default password immediately!');
