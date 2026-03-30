@@ -28,9 +28,19 @@ function planFromPriceId(priceId) {
 function callLicenseServer(method, path, body) {
   return new Promise((resolve, reject) => {
     const adminKey = process.env.LICENSE_SERVER_ADMIN_KEY;
-    const licenseHost = process.env.LICENSE_SERVER_HOST || 'license.nixpanel.io';
-    const licensePort = parseInt(process.env.LICENSE_SERVER_PORT) || 443;
-    const useHttps = licensePort === 443 || process.env.LICENSE_SERVER_HTTPS === 'true';
+
+    // Parse LICENSE_SERVER_URL if set, fall back to individual env vars
+    let licenseHost, licensePort, useHttps;
+    if (process.env.LICENSE_SERVER_URL) {
+      const parsed = new URL(process.env.LICENSE_SERVER_URL);
+      licenseHost = parsed.hostname;
+      licensePort = parseInt(parsed.port) || (parsed.protocol === 'https:' ? 443 : 80);
+      useHttps = parsed.protocol === 'https:';
+    } else {
+      licenseHost = process.env.LICENSE_SERVER_HOST || 'license.nixpanel.io';
+      licensePort = parseInt(process.env.LICENSE_SERVER_PORT) || 443;
+      useHttps = licensePort === 443 || process.env.LICENSE_SERVER_HTTPS === 'true';
+    }
 
     const payload = body ? JSON.stringify(body) : '';
     const options = {
@@ -203,7 +213,8 @@ async function handleWebhookEvent(event) {
           stripe_customer_id: customerId,
           stripe_subscription_id: subscriptionId,
         });
-        licenseKey = licenseRes.license_key || licenseRes.key;
+        console.log('[Stripe] License server response:', JSON.stringify(licenseRes));
+        licenseKey = licenseRes.license_key || licenseRes.key || licenseRes.licenseKey || licenseRes.license;
       } catch (err) {
         console.error('[Stripe] Failed to generate license key:', err.message);
         // Generate a fallback key if license server is down

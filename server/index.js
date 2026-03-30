@@ -36,6 +36,7 @@ const stripeRoutes = require('./routes/stripe');
 
 // ─── Init ──────────────────────────────────────────────────────────────────────
 const app = express();
+app.set('trust proxy', 1); // Trust X-Forwarded-For from Apache reverse proxy
 const server = http.createServer(app);
 const PORT = process.env.PORT || 3001;
 
