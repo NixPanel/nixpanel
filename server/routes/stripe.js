@@ -24,6 +24,13 @@ function planFromPriceId(priceId) {
   return map[priceId] || 'solo';
 }
 
+// Map NixPanel plan names → license server plan names
+// License server only accepts: 'pro', 'team', 'agency'
+function planForLicenseServer(plan) {
+  const map = { solo: 'pro', host: 'team', agency: 'agency' };
+  return map[plan] || 'pro';
+}
+
 // Call license server admin API to create/deactivate a license
 function callLicenseServer(method, path, body) {
   return new Promise((resolve, reject) => {
@@ -207,14 +214,26 @@ async function handleWebhookEvent(event) {
       // Generate license key via license server
       let licenseKey = null;
       try {
+        const licenseServerPlan = planForLicenseServer(plan);
         const licenseRes = await callLicenseServer('POST', '/admin/licenses', {
           email,
-          plan,
+          plan: licenseServerPlan,
           stripe_customer_id: customerId,
           stripe_subscription_id: subscriptionId,
         });
-        console.log('[Stripe] License server response:', JSON.stringify(licenseRes));
-        licenseKey = licenseRes.license_key || licenseRes.key || licenseRes.licenseKey || licenseRes.license;
+        console.log('[License] Full response:', JSON.stringify(licenseRes));
+        console.log('[License] Response data:', JSON.stringify(licenseRes));
+
+        if (licenseRes.error) {
+          console.error('[License] Server returned error:', licenseRes.error);
+          throw new Error(`License server error: ${licenseRes.error}`);
+        }
+
+        licenseKey = licenseRes.license_key;
+        if (!licenseKey) {
+          console.error('[License] license_key missing from response:', JSON.stringify(licenseRes));
+          throw new Error('License server returned no license_key');
+        }
       } catch (err) {
         console.error('[Stripe] Failed to generate license key:', err.message);
         // Generate a fallback key if license server is down
