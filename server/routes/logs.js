@@ -72,9 +72,9 @@ router.get('/read', authenticateToken, async (req, res) => {
     if (search) {
       // Sanitize search term: only allow alphanumeric and basic chars
       const safeSearch = search.replace(/[^a-zA-Z0-9 ._\-@]/g, '');
-      cmd = `sudo tail -n ${lineCount * 2} "${safePath}" 2>/dev/null | grep -i "${safeSearch}" | tail -n ${lineCount}`;
+      cmd = `tail -n ${lineCount * 2} "${safePath}" 2>/dev/null | grep -i "${safeSearch}" | tail -n ${lineCount}`;
     } else {
-      cmd = `sudo tail -n ${lineCount} "${safePath}" 2>/dev/null`;
+      cmd = `tail -n ${lineCount} "${safePath}" 2>/dev/null`;
     }
 
     const { stdout } = await execAsync(cmd, { timeout: 15000 });

@@ -1,16 +1,15 @@
 #!/usr/bin/env bash
-# NixPanel Installer
+# NixPanel Installer (Binary Edition)
 # Supports: AlmaLinux 9, Rocky Linux 9, RHEL 9, Ubuntu 22.04/24.04, Debian 11/12
 # Usage: bash install.sh
 
-# Note: set +u before pipefail to avoid BASH_SOURCE/array unbound errors on
-# minimal AlmaLinux 9 installs where bash arrays may not be initialized.
 set -eo pipefail
 set +u
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 INSTALL_DIR="/opt/nixpanel"
-REPO_URL="https://github.com/NixPanel/nixpanel.git"
+RELEASES_URL="https://github.com/NixPanel/nixpanel/releases/latest/download"
+BINARY_NAME="nixpanel-linux-x64"
 LOG_FILE="/tmp/nixpanel-install.log"
 
 # ─── Global state ─────────────────────────────────────────────────────────────
@@ -126,42 +125,32 @@ pkg_update() {
     ok "Package lists updated"
 }
 
-# ─── Install Node.js 20.x ────────────────────────────────────────────────────
+# ─── Install Node.js 20.x (required for PM2) ─────────────────────────────────
 install_nodejs() {
     arrow "nodejs not found - installing Node.js 20.x via NodeSource..."
 
     if [ "$OS_FAMILY" = "rhel" ]; then
         curl -fsSL https://rpm.nodesource.com/setup_20.x | bash - >> "$LOG_FILE" 2>&1 || {
             err "NodeSource setup script failed."
-            err "Check network connectivity and try manually:"
-            err "  curl -fsSL https://rpm.nodesource.com/setup_20.x | bash -"
-            err "  dnf install -y nodejs"
             exit 1
         }
         dnf install -y nodejs >> "$LOG_FILE" 2>&1 || {
             err "dnf install nodejs failed after NodeSource setup."
-            err "Try manually: dnf install -y nodejs"
             exit 1
         }
     else
         curl -fsSL https://deb.nodesource.com/setup_20.x | bash - >> "$LOG_FILE" 2>&1 || {
             err "NodeSource setup script failed."
-            err "Check network connectivity and try manually:"
-            err "  curl -fsSL https://deb.nodesource.com/setup_20.x | bash -"
-            err "  apt-get install -y nodejs"
             exit 1
         }
         DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs >> "$LOG_FILE" 2>&1 || {
             err "apt-get install nodejs failed after NodeSource setup."
-            err "Try manually: apt-get install -y nodejs"
             exit 1
         }
     fi
 
     if ! command -v node > /dev/null 2>&1; then
         err "Node.js installation completed but 'node' command not found."
-        err "This may be a PATH issue. Check: which node"
-        err "Or reinstall manually using the NodeSource instructions above."
         exit 1
     fi
 
@@ -171,7 +160,6 @@ install_nodejs() {
 }
 
 # ─── Dependency checker / installer ──────────────────────────────────────────
-# check_dep <display_name> <command> <install_pkg_or_fn>
 check_dep() {
     local name="$1"
     local cmd="$2"
@@ -196,7 +184,6 @@ check_dep() {
     else
         pkg_install "$install_action" || {
             err "Failed to install ${name} via package manager."
-            err "Try manually: ${PKG_MGR} install -y ${install_action}"
             exit 1
         }
     fi
@@ -226,7 +213,6 @@ ensure_epel() {
     arrow "epel-release not found - installing (required for certbot)..."
     dnf install -y epel-release >> "$LOG_FILE" 2>&1 || {
         err "Failed to install epel-release."
-        err "Try manually: dnf install -y epel-release"
         exit 1
     }
     dnf makecache -y >> "$LOG_FILE" 2>&1 || true
@@ -237,7 +223,6 @@ ensure_epel() {
 install_pm2() {
     npm install -g pm2 >> "$LOG_FILE" 2>&1 || {
         err "npm install -g pm2 failed."
-        err "Check npm is working: npm --version"
         err "Try manually: npm install -g pm2"
         exit 1
     }
@@ -251,31 +236,22 @@ install_system_deps() {
     pkg_update
     ensure_epel
 
-    check_dep "git"     "git"     "git"
     check_dep "curl"    "curl"    "curl"
     check_dep "wget"    "wget"    "wget"
     check_dep "openssl" "openssl" "openssl"
 
-    # Node.js 20.x
+    # Node.js 20.x (required for PM2)
     if command -v node > /dev/null 2>&1; then
         local major
         major=$(node -e "console.log(parseInt(process.version.slice(1).split('.')[0]))")
-        if [ "$major" -ge 20 ]; then
+        if [ "$major" -ge 18 ]; then
             ok "nodejs $(node --version) already installed"
         else
-            warn "nodejs $(node --version) found but version < 20 - upgrading..."
+            warn "nodejs $(node --version) found but version < 18 - upgrading..."
             install_nodejs
         fi
     else
         install_nodejs
-    fi
-
-    if command -v npm > /dev/null 2>&1; then
-        ok "npm $(npm --version) already installed"
-    else
-        err "npm not found after Node.js install. Something went wrong."
-        err "Try reinstalling Node.js manually."
-        exit 1
     fi
 
     if command -v pm2 > /dev/null 2>&1; then
@@ -292,68 +268,60 @@ install_system_deps() {
     ok "All system dependencies satisfied"
 }
 
-# ─── Clone repository ─────────────────────────────────────────────────────────
-clone_repo() {
-    if [ -d "${INSTALL_DIR}/.git" ]; then
-        ok "NixPanel repository already present at ${INSTALL_DIR}"
-        log "Pulling latest changes..."
-        git -C "${INSTALL_DIR}" pull >> "$LOG_FILE" 2>&1 || {
-            warn "git pull failed - continuing with existing code"
-        }
+# ─── Create install directory ─────────────────────────────────────────────────
+create_install_dir() {
+    if [ -d "$INSTALL_DIR" ]; then
+        ok "Install directory already exists: ${INSTALL_DIR}"
+    else
+        mkdir -p "$INSTALL_DIR"
+        ok "Created install directory: ${INSTALL_DIR}"
+    fi
+}
+
+# ─── Download NixPanel binary ─────────────────────────────────────────────────
+download_binary() {
+    local binary_url="${RELEASES_URL}/${BINARY_NAME}"
+    local dest="${INSTALL_DIR}/nixpanel"
+
+    if [ -f "$dest" ]; then
+        log "Existing binary found at ${dest}"
+        log "Downloading latest version..."
+    else
+        log "Downloading NixPanel binary..."
+    fi
+
+    arrow "Source: ${binary_url}"
+    curl -fsSL --progress-bar "$binary_url" -o "$dest" >> "$LOG_FILE" 2>&1 || {
+        err "Failed to download binary from:"
+        err "  ${binary_url}"
+        err "Check network connectivity or download manually."
+        exit 1
+    }
+
+    chmod +x "$dest"
+    ok "Binary downloaded: ${dest}"
+}
+
+# ─── Download .env.example ────────────────────────────────────────────────────
+download_env_example() {
+    local env_example="${INSTALL_DIR}/.env.example"
+
+    if [ -f "$env_example" ]; then
+        ok ".env.example already present"
         return 0
     fi
 
-    if [ -d "$INSTALL_DIR" ]; then
-        err "${INSTALL_DIR} already exists but is not a git repository."
-        err "Remove it and try again: rm -rf ${INSTALL_DIR}"
-        exit 1
-    fi
-
-    arrow "Cloning NixPanel into ${INSTALL_DIR}..."
-    git clone "$REPO_URL" "$INSTALL_DIR" >> "$LOG_FILE" 2>&1 || {
-        err "git clone failed."
-        err "  Source : ${REPO_URL}"
-        err "  Dest   : ${INSTALL_DIR}"
-        err "Check network connectivity and that git is installed."
-        err "Try manually: git clone ${REPO_URL} ${INSTALL_DIR}"
+    arrow "Downloading .env.example..."
+    curl -fsSL "${RELEASES_URL}/.env.example" -o "$env_example" >> "$LOG_FILE" 2>&1 || {
+        err "Failed to download .env.example"
         exit 1
     }
-    ok "Repository cloned to ${INSTALL_DIR}"
-}
-
-# ─── Verify install directory ─────────────────────────────────────────────────
-verify_install_dir() {
-    local missing=0
-
-    if [ ! -d "$INSTALL_DIR" ]; then
-        err "Install directory missing: ${INSTALL_DIR}"
-        missing=1
-    fi
-
-    if [ ! -f "${INSTALL_DIR}/.env.example" ]; then
-        err "Missing file: ${INSTALL_DIR}/.env.example"
-        missing=1
-    fi
-
-    if [ ! -f "${INSTALL_DIR}/server/index.js" ]; then
-        err "Missing file: ${INSTALL_DIR}/server/index.js"
-        missing=1
-    fi
-
-    if [ "$missing" -ne 0 ]; then
-        err "Repository appears incomplete. Try removing and re-running:"
-        err "  rm -rf ${INSTALL_DIR}"
-        err "  bash install.sh"
-        exit 1
-    fi
-
-    ok "Install directory verified: ${INSTALL_DIR}"
+    ok ".env.example downloaded"
 }
 
 # ─── Safe .env writer (no sed substitution; handles special chars in values) ──
 write_env_var() {
     local key="$1" val="$2"
-    # Delete existing line, then append — value never touches a regex
     sed -i "/^${key}=/d" "${INSTALL_DIR}/.env"
     printf '%s=%s\n' "$key" "$val" >> "${INSTALL_DIR}/.env"
 }
@@ -377,7 +345,7 @@ setup_env() {
         warn "openssl not found - please set JWT_SECRET manually in ${INSTALL_DIR}/.env"
     fi
 
-    ok ".env created. Review and set ANTHROPIC_API_KEY if you want AI features."
+    ok ".env created"
 }
 
 # ─── Collect admin account details ───────────────────────────────────────────
@@ -387,12 +355,10 @@ setup_admin_account() {
     echo -e "${BOLD}│        Create Admin Account         │${NC}"
     echo -e "${BOLD}└─────────────────────────────────────┘${NC}"
 
-    # Username (default: admin)
     read -rp "Admin username [admin]: " ADMIN_USERNAME </dev/tty || ADMIN_USERNAME=""
     ADMIN_USERNAME="${ADMIN_USERNAME:-admin}"
     ADMIN_USERNAME="${ADMIN_USERNAME// /}"
 
-    # Email (required)
     while true; do
         read -rp "Admin email: " ADMIN_EMAIL </dev/tty || ADMIN_EMAIL=""
         ADMIN_EMAIL="${ADMIN_EMAIL// /}"
@@ -400,7 +366,6 @@ setup_admin_account() {
         warn "Email address is required."
     done
 
-    # Password with length check and confirmation
     while true; do
         read -rsp "Admin password (min 8 chars): " ADMIN_PASSWORD </dev/tty || ADMIN_PASSWORD=""
         echo ""
@@ -419,48 +384,11 @@ setup_admin_account() {
         unset pw_confirm
     done
 
-    # Write to .env — password is never echoed to log
     write_env_var "ADMIN_USERNAME" "$ADMIN_USERNAME"
     write_env_var "ADMIN_EMAIL"    "$ADMIN_EMAIL"
     write_env_var "ADMIN_PASSWORD" "$ADMIN_PASSWORD"
 
     ok "Admin account configured"
-}
-
-# ─── Install server deps ──────────────────────────────────────────────────────
-install_server() {
-    log "Installing server dependencies..."
-    cd "${INSTALL_DIR}"
-    npm install --production >> "$LOG_FILE" 2>&1 || {
-        err "npm install --production failed in ${INSTALL_DIR}"
-        err "Check ${LOG_FILE} for details."
-        exit 1
-    }
-    ok "Server dependencies installed"
-}
-
-# ─── Install & build client ───────────────────────────────────────────────────
-install_client() {
-    if [ ! -d "${INSTALL_DIR}/client" ]; then
-        warn "No client/ directory found - skipping frontend build"
-        return 0
-    fi
-
-    log "Installing client dependencies..."
-    cd "${INSTALL_DIR}/client"
-    npm install >> "$LOG_FILE" 2>&1 || {
-        err "npm install failed in ${INSTALL_DIR}/client"
-        err "Check ${LOG_FILE} for details."
-        exit 1
-    }
-
-    log "Building client (this may take a moment)..."
-    npm run build >> "$LOG_FILE" 2>&1 || {
-        err "npm run build failed in ${INSTALL_DIR}/client"
-        err "Check ${LOG_FILE} for details."
-        exit 1
-    }
-    ok "Client built successfully"
 }
 
 # ─── pm2 startup ─────────────────────────────────────────────────────────────
@@ -470,13 +398,15 @@ setup_pm2_startup() {
     if [ "${SETUP_PM2}" != "y" ] && [ "${SETUP_PM2}" != "Y" ]; then
         log "Skipping pm2 startup setup."
         log "To set up later:"
-        log "  cd ${INSTALL_DIR} && pm2 start server/index.js --name nixpanel"
+        log "  pm2 start ${INSTALL_DIR}/nixpanel --name nixpanel"
         log "  pm2 save && pm2 startup"
         return 0
     fi
 
-    cd "${INSTALL_DIR}"
-    pm2 start server/index.js --name nixpanel >> "$LOG_FILE" 2>&1 || {
+    # Stop existing instance if running
+    pm2 delete nixpanel >> "$LOG_FILE" 2>&1 || true
+
+    pm2 start "${INSTALL_DIR}/nixpanel" --name nixpanel >> "$LOG_FILE" 2>&1 || {
         err "pm2 start failed. Check ${LOG_FILE} for details."
         exit 1
     }
@@ -497,7 +427,7 @@ setup_pm2_startup() {
 ask_domain() {
     echo ""
     read -rp "Enter your domain name (leave blank to use IP address): " DOMAIN </dev/tty || DOMAIN=""
-    DOMAIN="${DOMAIN// /}"  # strip spaces
+    DOMAIN="${DOMAIN// /}"
 
     if [ -z "$DOMAIN" ]; then
         SERVER_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "")
@@ -618,16 +548,12 @@ main() {
     detect_os
     install_system_deps
 
-    # Clone BEFORE any file operations that depend on repo contents
-    clone_repo
-    verify_install_dir
-
-    cd "${INSTALL_DIR}"
+    create_install_dir
+    download_binary
+    download_env_example
 
     setup_env
     setup_admin_account
-    install_server
-    install_client
     ask_domain
     setup_nginx
     configure_firewall

@@ -190,9 +190,24 @@ router.delete('/keys/:username/:keyIndex', authenticateToken, requireRole('admin
   }
 });
 
-// POST /api/ssh/generate - generate a new key pair
+const KEYPAIR_STORE = '/etc/nixpanel/ssh';
+
+function ensureKeypairStore() {
+  if (!fs.existsSync(KEYPAIR_STORE)) {
+    fs.mkdirSync(KEYPAIR_STORE, { recursive: true, mode: 0o700 });
+  }
+}
+
+function sanitizeKeyName(name) {
+  if (!name || typeof name !== 'string') throw new Error('Key name required');
+  const safe = name.replace(/[^a-zA-Z0-9_\-]/g, '').substring(0, 64);
+  if (!safe) throw new Error('Invalid key name');
+  return safe;
+}
+
+// POST /api/ssh/generate - generate a new key pair and store it
 router.post('/generate', authenticateToken, requireRole('admin'), async (req, res) => {
-  let { type = 'ed25519', bits = 4096, comment = '' } = req.body;
+  let { type = 'ed25519', bits = 4096, comment = '', name = '' } = req.body;
 
   const validTypes = ['rsa', 'ed25519', 'ecdsa'];
   if (!validTypes.includes(type)) {
@@ -202,41 +217,183 @@ router.post('/generate', authenticateToken, requireRole('admin'), async (req, re
   bits = parseInt(bits) || 4096;
   if (bits < 1024 || bits > 8192) bits = 4096;
 
-  // Sanitize comment
   comment = String(comment).replace(/[^a-zA-Z0-9@.\-_ ]/g, '').substring(0, 100);
 
-  try {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nixpanel-ssh-'));
-    const keyPath = path.join(tmpDir, 'id_key');
+  // Derive storage name from comment or generate timestamp-based name
+  const storeName = name
+    ? sanitizeKeyName(name)
+    : `key_${type}_${Date.now()}`;
 
-    let cmd = `ssh-keygen -t ${type} -f ${keyPath} -N "" -q`;
+  try {
+    ensureKeypairStore();
+    const keyPath = path.join(KEYPAIR_STORE, storeName);
+
+    if (fs.existsSync(keyPath)) {
+      return res.status(400).json({ error: `A key named "${storeName}" already exists` });
+    }
+
+    let cmd = `ssh-keygen -t ${type} -f "${keyPath}" -N "" -q`;
     if (type === 'rsa') cmd += ` -b ${bits}`;
     if (comment) cmd += ` -C "${comment}"`;
 
     await execAsync(cmd, { timeout: 30000 });
 
+    fs.chmodSync(keyPath, 0o600);
+    fs.chmodSync(`${keyPath}.pub`, 0o644);
+
     const privateKey = fs.readFileSync(keyPath, 'utf8');
     const publicKey = fs.readFileSync(`${keyPath}.pub`, 'utf8').trim();
 
-    // Get fingerprint
     let fingerprint = null;
     try {
-      const { stdout } = await execAsync(`ssh-keygen -l -f ${keyPath}.pub`, { timeout: 5000 });
+      const { stdout } = await execAsync(`ssh-keygen -l -f "${keyPath}.pub"`, { timeout: 5000 });
       fingerprint = stdout.trim();
     } catch (_) {}
 
-    // Cleanup
-    try {
-      fs.unlinkSync(keyPath);
-      fs.unlinkSync(`${keyPath}.pub`);
-      fs.rmdirSync(tmpDir);
-    } catch (_) {}
-
-    auditLog(req.user.id, req.user.username, 'SSH_KEYGEN', `${type}${type === 'rsa' ? `-${bits}` : ''}`, null, req.ip);
-    res.json({ privateKey, publicKey, fingerprint, type, bits });
+    auditLog(req.user.id, req.user.username, 'SSH_KEYGEN', storeName, null, req.ip);
+    res.json({ privateKey, publicKey, fingerprint, type, bits, name: storeName });
   } catch (err) {
     console.error('[SSH] Generate error:', err);
-    res.status(500).json({ error: 'Failed to generate key pair' });
+    res.status(500).json({ error: err.message || 'Failed to generate key pair' });
+  }
+});
+
+// GET /api/ssh/keypairs - list all stored key pairs
+router.get('/keypairs', authenticateToken, requireRole('admin'), (req, res) => {
+  try {
+    ensureKeypairStore();
+    const files = fs.readdirSync(KEYPAIR_STORE);
+    const keypairs = [];
+    const seen = new Set();
+
+    for (const file of files) {
+      if (file.endsWith('.pub')) continue;
+      const name = file;
+      if (seen.has(name)) continue;
+      seen.add(name);
+
+      const privatePath = path.join(KEYPAIR_STORE, name);
+      const publicPath = `${privatePath}.pub`;
+      if (!fs.existsSync(publicPath)) continue;
+
+      const publicKey = fs.readFileSync(publicPath, 'utf8').trim();
+      const parts = publicKey.split(/\s+/);
+      const stat = fs.statSync(privatePath);
+
+      let fingerprint = null;
+      try {
+        const result = require('child_process').execFileSync(
+          'ssh-keygen', ['-l', '-f', publicPath], { timeout: 5000 }
+        ).toString().trim();
+        fingerprint = result.split(/\s+/).slice(1, 2).join('') || null;
+      } catch (_) {}
+
+      keypairs.push({
+        name,
+        type: parts[0] || 'unknown',
+        comment: parts.slice(2).join(' ') || '',
+        fingerprint,
+        publicKey,
+        createdAt: stat.birthtime || stat.mtime,
+        privatePath,
+        publicPath,
+      });
+    }
+
+    keypairs.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    res.json({ keypairs });
+  } catch (err) {
+    console.error('[SSH] List keypairs error:', err);
+    res.status(500).json({ error: 'Failed to list key pairs' });
+  }
+});
+
+// GET /api/ssh/keypairs/:name/download?type=public|private
+router.get('/keypairs/:name/download', authenticateToken, requireRole('admin'), (req, res) => {
+  try {
+    const name = sanitizeKeyName(req.params.name);
+    const keyType = req.query.type === 'private' ? 'private' : 'public';
+    const filePath = keyType === 'private'
+      ? path.join(KEYPAIR_STORE, name)
+      : path.join(KEYPAIR_STORE, `${name}.pub`);
+
+    if (!filePath.startsWith(KEYPAIR_STORE + '/')) {
+      return res.status(400).json({ error: 'Invalid path' });
+    }
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ error: 'Key not found' });
+    }
+
+    const filename = keyType === 'private' ? name : `${name}.pub`;
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Content-Type', 'text/plain');
+    auditLog(req.user.id, req.user.username, 'SSH_KEY_DOWNLOAD', `${name}:${keyType}`, null, req.ip);
+    res.send(fs.readFileSync(filePath, 'utf8'));
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// POST /api/ssh/keypairs/:name/authorize - add public key to a user's authorized_keys
+router.post('/keypairs/:name/authorize', authenticateToken, requireRole('admin'), async (req, res) => {
+  const { username = 'root' } = req.body;
+  try {
+    const name = sanitizeKeyName(req.params.name);
+    const publicPath = path.join(KEYPAIR_STORE, `${name}.pub`);
+    if (!fs.existsSync(publicPath)) {
+      return res.status(404).json({ error: 'Key not found' });
+    }
+
+    const publicKey = fs.readFileSync(publicPath, 'utf8').trim();
+    const safeUser = sanitizeUsername(username);
+    const homeDir = getUserHome(safeUser);
+    const sshDir = path.join(homeDir, '.ssh');
+    const authKeysPath = path.join(sshDir, 'authorized_keys');
+
+    if (!fs.existsSync(sshDir)) {
+      fs.mkdirSync(sshDir, { recursive: true, mode: 0o700 });
+      await execAsync(`chown ${safeUser}:${safeUser} "${sshDir}" 2>/dev/null || true`, { timeout: 3000 });
+    }
+
+    let existing = '';
+    try { existing = fs.readFileSync(authKeysPath, 'utf8'); } catch (_) {}
+
+    const keyData = publicKey.split(/\s+/)[1];
+    if (existing.includes(keyData)) {
+      return res.status(400).json({ error: 'Key already in authorized_keys' });
+    }
+
+    fs.appendFileSync(authKeysPath, '\n' + publicKey + '\n');
+    await execAsync(`chmod 600 "${authKeysPath}" && chown ${safeUser}:${safeUser} "${authKeysPath}" 2>/dev/null || true`, { timeout: 3000 });
+
+    auditLog(req.user.id, req.user.username, 'SSH_KEY_AUTHORIZE', `${name} -> ${safeUser}`, null, req.ip);
+    res.json({ success: true, message: `Public key authorized for ${safeUser}` });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// DELETE /api/ssh/keypairs/:name
+router.delete('/keypairs/:name', authenticateToken, requireRole('admin'), (req, res) => {
+  try {
+    const name = sanitizeKeyName(req.params.name);
+    const privatePath = path.join(KEYPAIR_STORE, name);
+    const publicPath = `${privatePath}.pub`;
+
+    if (!privatePath.startsWith(KEYPAIR_STORE + '/')) {
+      return res.status(400).json({ error: 'Invalid path' });
+    }
+
+    let deleted = false;
+    if (fs.existsSync(privatePath)) { fs.unlinkSync(privatePath); deleted = true; }
+    if (fs.existsSync(publicPath)) { fs.unlinkSync(publicPath); deleted = true; }
+
+    if (!deleted) return res.status(404).json({ error: 'Key not found' });
+
+    auditLog(req.user.id, req.user.username, 'SSH_KEYPAIR_DELETE', name, null, req.ip);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
   }
 });
 

@@ -119,7 +119,7 @@ router.post('/:name/:action', authenticateToken, requireRole('admin', 'operator'
     }
 
     const { stdout, stderr } = await execAsync(
-      `sudo systemctl ${action} ${name}.service 2>&1 || true`,
+      `systemctl ${action} ${name}.service 2>&1 || true`,
       { timeout: 30000 }
     );
 

@@ -9,7 +9,11 @@ export function useAuth() {
 
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
-  const [token, setToken] = useState(() => localStorage.getItem('nixpanel_token'));
+  const [token, setToken] = useState(() => {
+    const t = localStorage.getItem('nixpanel_token');
+    if (t) axios.defaults.headers.common['Authorization'] = `Bearer ${t}`;
+    return t;
+  });
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {

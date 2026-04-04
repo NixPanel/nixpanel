@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import axios from 'axios';
+import { useAuth } from './AuthContext.jsx';
 
 const LicenseContext = createContext(null);
 
@@ -8,13 +9,13 @@ export function useLicense() {
 }
 
 export function LicenseProvider({ children }) {
+  const { token } = useAuth();
   const [license, setLicense] = useState({ status: 'free', plan: null, email: null, expires: null, hasKey: false });
   const [loading, setLoading] = useState(true);
 
   const fetchLicense = async () => {
-    // Only fetch if we have an auth token
-    const token = localStorage.getItem('nixpanel_token');
     if (!token) {
+      setLicense({ status: 'free', plan: null, email: null, expires: null, hasKey: false });
       setLoading(false);
       return;
     }
@@ -28,7 +29,7 @@ export function LicenseProvider({ children }) {
     }
   };
 
-  useEffect(() => { fetchLicense(); }, []);
+  useEffect(() => { fetchLicense(); }, [token]);
 
   const isPro = license.status === 'active';
 

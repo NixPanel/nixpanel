@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { Zap, AlertCircle, ChevronDown, ChevronRight, Copy, Play, RefreshCw, Flame, Globe, HardDrive, Server, Shield, Terminal, CheckCircle, XCircle } from 'lucide-react';
+import { Zap, AlertCircle, ChevronDown, ChevronRight, Copy, Play, RefreshCw, Flame, Globe, HardDrive, Server, Shield, Terminal, CheckCircle, XCircle, Settings, ExternalLink, Bot } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import Sidebar from '../components/Sidebar.jsx';
 
@@ -241,12 +242,45 @@ function DiagnosisCard({ session, onRunCommand }) {
   );
 }
 
+function AiKeyRequiredBanner() {
+  const navigate = useNavigate();
+  return (
+    <div className="card border border-dark-600 text-center py-10">
+      <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-purple-500/20 to-cyan-500/20 border border-purple-500/20 flex items-center justify-center mx-auto mb-4">
+        <Bot className="w-6 h-6 text-purple-400" />
+      </div>
+      <h3 className="text-base font-semibold text-white mb-2">AI Assistant needs your API key</h3>
+      <p className="text-sm text-gray-400 mb-5">
+        To use AI features you need to add your Anthropic API key in settings.
+      </p>
+      <div className="flex items-center justify-center gap-3">
+        <button
+          onClick={() => navigate('/settings#ai-config')}
+          className="btn-primary text-sm py-2 flex items-center gap-2"
+        >
+          <Settings className="w-3.5 h-3.5" />
+          Go to Settings
+        </button>
+        <a
+          href="https://console.anthropic.com"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="btn-secondary text-sm py-2 flex items-center gap-2"
+        >
+          Get API Key
+          <ExternalLink className="w-3.5 h-3.5" />
+        </a>
+      </div>
+    </div>
+  );
+}
+
 export default function Troubleshoot() {
   const [problem, setProblem] = useState('');
   const [sessions, setSessions] = useState([]);
   const [diagnosing, setDiagnosing] = useState(false);
   const [commandResults, setCommandResults] = useState([]);
-  const [apiKeyMissing, setApiKeyMissing] = useState(false);
+  const [aiKeyRequired, setAiKeyRequired] = useState(false);
   const sessionsEndRef = useRef(null);
 
   useEffect(() => {
@@ -294,8 +328,11 @@ export default function Troubleshoot() {
 
       if (!response.ok) {
         const err = await response.json();
-        if (err.error?.includes('ANTHROPIC_API_KEY')) {
-          setApiKeyMissing(true);
+        if (err.error === 'AI_KEY_REQUIRED') {
+          setAiKeyRequired(true);
+          setSessions(prev => prev.slice(0, -1));
+          setDiagnosing(false);
+          return;
         }
         throw new Error(err.error || 'Request failed');
       }
@@ -392,20 +429,8 @@ export default function Troubleshoot() {
         <div className="flex-1 overflow-y-auto">
           <div className="max-w-4xl mx-auto px-6 py-6 space-y-6">
 
-            {/* API Key Banner */}
-            {apiKeyMissing && (
-              <div className="card border border-yellow-500/30 bg-yellow-500/5">
-                <div className="flex items-start gap-3">
-                  <AlertCircle className="w-5 h-5 text-yellow-400 mt-0.5 flex-shrink-0" />
-                  <div>
-                    <div className="text-yellow-400 font-semibold mb-1">ANTHROPIC_API_KEY not configured</div>
-                    <p className="text-sm text-gray-300">To enable AI Troubleshoot, add your API key to the <code className="text-blue-300 bg-dark-800 px-1.5 py-0.5 rounded text-xs">.env</code> file:</p>
-                    <pre className="mt-2 bg-gray-950 rounded-lg p-3 text-xs font-mono text-green-300">ANTHROPIC_API_KEY=sk-ant-...</pre>
-                    <p className="text-xs text-gray-500 mt-2">Get your key at <a href="https://console.anthropic.com" target="_blank" rel="noopener noreferrer" className="text-blue-400 underline">console.anthropic.com</a></p>
-                  </div>
-                </div>
-              </div>
-            )}
+            {/* API Key Required */}
+            {aiKeyRequired && <AiKeyRequiredBanner />}
 
             {/* Quick Action buttons */}
             <div>

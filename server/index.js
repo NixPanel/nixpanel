@@ -1,10 +1,17 @@
-require('dotenv').config({ path: require('path').join(__dirname, '../.env') });
+const path = require('path');
+const isPkg = typeof process.pkg !== 'undefined';
+const basePath = isPkg ? path.dirname(process.execPath) : path.join(__dirname, '..');
+require('dotenv').config({ path: path.join(basePath, '.env') });
 
 const express = require('express');
 const helmet = require('helmet');
 const cors = require('cors');
 const rateLimit = require('express-rate-limit');
-const path = require('path');
+
+if (isPkg) {
+  console.log('[NixPanel] Running as compiled binary');
+  console.log('[NixPanel] Binary path:', process.execPath);
+}
 const { WebSocketServer } = require('ws');
 const http = require('http');
 const si = require('systeminformation');
@@ -33,6 +40,7 @@ const { authenticateToken } = require('./middleware/auth');
 const requirePro = require('./middleware/requirePro');
 const licenseRoutes = require('./routes/license');
 const stripeRoutes = require('./routes/stripe');
+const settingsRoutes = require('./routes/settings');
 
 // ─── Init ──────────────────────────────────────────────────────────────────────
 const app = express();
@@ -89,6 +97,7 @@ app.use('/api/services', servicesRoutes);
 app.use('/api/logs', logsRoutes);
 app.use('/api/files', filesRoutes);
 app.use('/api/license', licenseRoutes);
+app.use('/api/settings', settingsRoutes);
 app.use('/api/ai', requirePro, aiRoutes);
 app.use('/api/firewall', requirePro, firewallRoutes);
 app.use('/api/cron', requirePro, cronRoutes);
@@ -111,6 +120,8 @@ app.get('/api/health', (req, res) => {
 });
 
 // ─── Static client files ───────────────────────────────────────────────────────
+// When running as pkg binary, __dirname points inside the snapshot (embedded assets).
+// When running from source, __dirname is the server/ directory.
 const clientBuildPath = path.join(__dirname, '../client/dist');
 app.use(express.static(clientBuildPath));
 
@@ -221,7 +232,42 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log('');
 
   statsInterval = setInterval(broadcastStats, 3000);
+
+  // Start HTTPS server if SSL is configured
+  startHttpsIfConfigured();
 });
+
+function startHttpsIfConfigured() {
+  const { getSetting } = require('./db/database');
+  const certPath = getSetting('ssl_cert_path');
+  const keyPath = getSetting('ssl_key_path');
+  if (!certPath || !keyPath) return;
+  try {
+    const fs = require('fs');
+    if (!fs.existsSync(certPath) || !fs.existsSync(keyPath)) {
+      console.log('[SSL] Cert files not found, skipping HTTPS');
+      return;
+    }
+    const https = require('https');
+    const httpsServer = https.createServer({
+      cert: fs.readFileSync(certPath),
+      key: fs.readFileSync(keyPath),
+    }, app);
+    const HTTPS_PORT = parseInt(process.env.HTTPS_PORT) || 3443;
+    httpsServer.listen(HTTPS_PORT, '0.0.0.0', () => {
+      console.log(`[SSL] HTTPS server running on port ${HTTPS_PORT}`);
+    });
+    // Attach WebSocket to HTTPS server too
+    const { WebSocketServer: WSSHttps } = require('ws');
+    const wssHttps = new WSSHttps({ server: httpsServer, path: '/ws' });
+    wssHttps.on('connection', (ws, req) => {
+      // reuse same auth logic — copy the wss connection handler
+      wss.emit('connection', ws, req);
+    });
+  } catch (err) {
+    console.error('[SSL] Failed to start HTTPS server:', err.message);
+  }
+}
 
 // Graceful shutdown
 process.on('SIGTERM', shutdown);

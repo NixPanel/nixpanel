@@ -11,12 +11,12 @@ const router = express.Router();
 router.get('/rules', authenticateToken, async (req, res) => {
   try {
     const [iptablesOut, ip6tablesOut] = await Promise.allSettled([
-      execAsync('sudo iptables -L -n --line-numbers -v 2>&1', { timeout: 10000 }),
-      execAsync('sudo ip6tables -L -n --line-numbers -v 2>&1', { timeout: 10000 }),
+      execAsync('iptables -L -n --line-numbers -v 2>&1', { timeout: 10000 }),
+      execAsync('ip6tables -L -n --line-numbers -v 2>&1', { timeout: 10000 }),
     ]);
 
     // Also get UFW status if available
-    const ufwOut = await execAsync('sudo ufw status verbose 2>/dev/null || echo "UFW not available"', { timeout: 10000 }).catch(() => ({ stdout: 'UFW not available' }));
+    const ufwOut = await execAsync('ufw status verbose 2>/dev/null || echo "UFW not available"', { timeout: 10000 }).catch(() => ({ stdout: 'UFW not available' }));
 
     res.json({
       iptables: iptablesOut.status === 'fulfilled' ? iptablesOut.value.stdout : 'iptables not available',
@@ -32,7 +32,7 @@ router.get('/rules', authenticateToken, async (req, res) => {
 // GET /api/firewall/ufw - UFW status
 router.get('/ufw', authenticateToken, async (req, res) => {
   try {
-    const { stdout } = await execAsync('sudo ufw status numbered 2>&1', { timeout: 10000 });
+    const { stdout } = await execAsync('ufw status numbered 2>&1', { timeout: 10000 });
     res.json({ output: stdout });
   } catch (err) {
     res.json({ output: 'UFW not available or not installed', error: true });
@@ -42,7 +42,7 @@ router.get('/ufw', authenticateToken, async (req, res) => {
 // POST /api/firewall/ufw/enable
 router.post('/ufw/enable', authenticateToken, requireRole('admin'), async (req, res) => {
   try {
-    const { stdout } = await execAsync('sudo ufw --force enable 2>&1', { timeout: 15000 });
+    const { stdout } = await execAsync('ufw --force enable 2>&1', { timeout: 15000 });
     auditLog(req.user.id, req.user.username, 'FIREWALL_UFW_ENABLE', 'firewall', null, req.ip);
     res.json({ success: true, output: stdout });
   } catch (err) {
@@ -53,7 +53,7 @@ router.post('/ufw/enable', authenticateToken, requireRole('admin'), async (req, 
 // POST /api/firewall/ufw/disable
 router.post('/ufw/disable', authenticateToken, requireRole('admin'), async (req, res) => {
   try {
-    const { stdout } = await execAsync('sudo ufw disable 2>&1', { timeout: 15000 });
+    const { stdout } = await execAsync('ufw disable 2>&1', { timeout: 15000 });
     auditLog(req.user.id, req.user.username, 'FIREWALL_UFW_DISABLE', 'firewall', null, req.ip);
     res.json({ success: true, output: stdout });
   } catch (err) {
@@ -78,7 +78,7 @@ router.post('/ufw/rule', authenticateToken, requireRole('admin'), async (req, re
   const commentClause = comment ? ` comment '${comment.replace(/'/g, '')}'` : '';
 
   try {
-    const cmd = `sudo ufw ${action}${fromClause} to any port ${port}${proto}${commentClause} 2>&1`;
+    const cmd = `ufw ${action}${fromClause} to any port ${port}${proto}${commentClause} 2>&1`;
     const { stdout } = await execAsync(cmd, { timeout: 15000 });
 
     auditLog(req.user.id, req.user.username, 'FIREWALL_RULE_ADD', `${action}:${port}`, { port, protocol, from }, req.ip);
@@ -96,7 +96,7 @@ router.delete('/ufw/rule/:ruleNumber', authenticateToken, requireRole('admin'), 
   }
 
   try {
-    const { stdout } = await execAsync(`sudo ufw --force delete ${ruleNum} 2>&1`, { timeout: 15000 });
+    const { stdout } = await execAsync(`ufw --force delete ${ruleNum} 2>&1`, { timeout: 15000 });
     auditLog(req.user.id, req.user.username, 'FIREWALL_RULE_DELETE', String(ruleNum), null, req.ip);
     res.json({ success: true, output: stdout });
   } catch (err) {

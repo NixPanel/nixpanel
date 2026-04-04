@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { ShieldAlert, CheckCircle, XCircle, AlertTriangle, RefreshCw, Search, Shield, Eye } from 'lucide-react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { ShieldAlert, CheckCircle, XCircle, AlertTriangle, RefreshCw, Search, Shield, Eye, Wrench } from 'lucide-react';
 import axios from 'axios';
 import Sidebar from '../components/Sidebar.jsx';
 import Header from '../components/Header.jsx';
@@ -30,7 +30,7 @@ function ScoreGauge({ score }) {
   );
 }
 
-function FindingsList({ findings }) {
+function FindingsList({ findings, onFix, fixing }) {
   if (!findings || findings.length === 0) return null;
 
   const severityIcon = {
@@ -54,10 +54,22 @@ function FindingsList({ findings }) {
           'bg-dark-700 border-dark-600'
         }`}>
           <div className="mt-0.5">{severityIcon[f.severity] || <Eye className="w-4 h-4 text-gray-400" />}</div>
-          <div>
+          <div className="flex-1">
             <span className="text-xs font-semibold text-gray-400 uppercase tracking-wide">{f.category}</span>
             <p className="text-sm text-gray-200 mt-0.5">{f.message}</p>
           </div>
+          {f.fixId && f.severity !== 'ok' && onFix && (
+            <button
+              onClick={() => onFix(f.fixId)}
+              disabled={fixing === f.fixId}
+              className="shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed text-white transition-colors"
+            >
+              {fixing === f.fixId
+                ? <RefreshCw className="w-3 h-3 animate-spin" />
+                : <Wrench className="w-3 h-3" />}
+              {fixing === f.fixId ? 'Fixing...' : 'Fix'}
+            </button>
+          )}
         </div>
       ))}
     </div>
@@ -75,13 +87,20 @@ export default function Security() {
   const [suidFiles, setSuidFiles] = useState(null);
   const [worldWritable, setWorldWritable] = useState(null);
   const [loading, setLoading] = useState({});
+  const [fixing, setFixing] = useState(null);
   const [unbanInput, setUnbanInput] = useState({ jail: '', ip: '' });
   const [actionResult, setActionResult] = useState('');
+  const actionResultRef = useRef(null);
+  const [sslCerts, setSslCerts] = useState(null);
+  const [certbotDomain, setCertbotDomain] = useState('');
+  const [certbotEmail, setCertbotEmail] = useState('');
+  const [certbotRunning, setCertbotRunning] = useState(false);
+  const [renewRunning, setRenewRunning] = useState(false);
 
   const setLoad = (key, val) => setLoading(prev => ({ ...prev, [key]: val }));
 
-  const fetchScore = useCallback(async () => {
-    setLoad('score', true);
+  const fetchScore = useCallback(async (silent = false) => {
+    if (!silent) setLoad('score', true);
     try {
       const res = await axios.get('/api/security/score');
       setScore(res.data.score);
@@ -141,6 +160,18 @@ export default function Security() {
     }
   }, []);
 
+  const fetchSslCerts = useCallback(async () => {
+    setLoad('ssl', true);
+    try {
+      const res = await axios.get('/api/ssl/certs');
+      setSslCerts(res.data.certs || []);
+    } catch (_) {
+      setSslCerts([]);
+    } finally {
+      setLoad('ssl', false);
+    }
+  }, []);
+
   useEffect(() => {
     fetchScore();
   }, []);
@@ -150,7 +181,24 @@ export default function Security() {
     else if (activeTab === 'logins' && !logins) fetchLogins();
     else if (activeTab === 'ssh' && !sshConfig) fetchSshConfig();
     else if (activeTab === 'ports' && openPorts.length === 0) fetchOpenPorts();
+    else if (activeTab === 'ssl' && !sslCerts) fetchSslCerts();
   }, [activeTab]);
+
+  const handleFix = async (fixId) => {
+    setFixing(fixId);
+    setActionResult('');
+    try {
+      const res = await axios.post('/api/security/fix', { fixId });
+      setActionResult(res.data.message || 'Fix applied successfully');
+      fetchScore(true); // silent — don't replace findings list with loading spinner
+      if (activeTab === 'ssh') fetchSshConfig();
+    } catch (err) {
+      setActionResult(`Error: ${err.response?.data?.error || 'Fix failed'}`);
+    } finally {
+      setFixing(null);
+      setTimeout(() => actionResultRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 50);
+    }
+  };
 
   const handleUnban = async (e) => {
     e.preventDefault();
@@ -199,6 +247,7 @@ export default function Security() {
     { id: 'ssh', label: 'SSH Config' },
     { id: 'ports', label: 'Open Ports' },
     { id: 'audit', label: 'File Audit' },
+    { id: 'ssl', label: 'SSL' },
   ];
 
   return (
@@ -214,8 +263,12 @@ export default function Security() {
           />
 
           {actionResult && (
-            <div className={`mb-4 p-3 rounded-lg text-sm border ${actionResult.startsWith('Error') ? 'bg-red-500/10 border-red-500/30 text-red-400' : 'bg-green-500/10 border-green-500/30 text-green-400'}`}>
-              {actionResult}
+            <div
+              ref={actionResultRef}
+              className={`mb-4 p-4 rounded-lg text-sm font-medium border flex items-center justify-between gap-3 ${actionResult.startsWith('Error') ? 'bg-red-500/15 border-red-500/40 text-red-300' : 'bg-green-500/15 border-green-500/40 text-green-300'}`}
+            >
+              <span>{actionResult}</span>
+              <button onClick={() => setActionResult('')} className="text-gray-500 hover:text-gray-300 text-lg leading-none">&times;</button>
             </div>
           )}
 
@@ -247,7 +300,7 @@ export default function Security() {
               ) : (
                 <>
                   <h3 className="text-sm font-semibold text-gray-300">Security Findings</h3>
-                  <FindingsList findings={findings} />
+                  <FindingsList findings={findings} onFix={handleFix} fixing={fixing} />
                   {findings.length === 0 && (
                     <div className="text-center py-8 text-gray-500">Click refresh to run a security check</div>
                   )}
@@ -473,6 +526,7 @@ export default function Security() {
                           <th className="text-left px-4 py-3 text-gray-400 font-medium text-xs">Setting</th>
                           <th className="text-left px-4 py-3 text-gray-400 font-medium text-xs">Value</th>
                           <th className="text-left px-4 py-3 text-gray-400 font-medium text-xs">Recommendation</th>
+                          <th className="px-4 py-3 w-20"></th>
                         </tr>
                       </thead>
                       <tbody>
@@ -486,6 +540,20 @@ export default function Security() {
                             <td className="px-4 py-3 font-mono text-sm text-white">{check.key}</td>
                             <td className="px-4 py-3 font-mono text-sm text-gray-300">{check.value}</td>
                             <td className="px-4 py-3 text-xs text-gray-500">{check.recommendation}</td>
+                            <td className="px-4 py-3">
+                              {!check.pass && check.fixId && (
+                                <button
+                                  onClick={() => handleFix(check.fixId)}
+                                  disabled={fixing === check.fixId}
+                                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed text-white transition-colors whitespace-nowrap"
+                                >
+                                  {fixing === check.fixId
+                                    ? <RefreshCw className="w-3 h-3 animate-spin" />
+                                    : <Wrench className="w-3 h-3" />}
+                                  {fixing === check.fixId ? 'Fixing...' : 'Fix'}
+                                </button>
+                              )}
+                            </td>
                           </tr>
                         ))}
                       </tbody>
@@ -553,6 +621,143 @@ export default function Security() {
               ) : (
                 <div className="text-center py-8 text-gray-500">Click Refresh to load open ports</div>
               )}
+            </div>
+          )}
+
+          {/* SSL Tab */}
+          {activeTab === 'ssl' && (
+            <div className="space-y-6">
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                {/* Cert list */}
+                <div className="lg:col-span-2 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-sm font-semibold text-gray-300">Installed Certificates</h3>
+                    <button onClick={fetchSslCerts} disabled={loading.ssl} className="btn-primary text-xs py-1.5 flex items-center gap-1.5">
+                      {loading.ssl ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+                      Refresh
+                    </button>
+                  </div>
+                  {loading.ssl ? (
+                    <div className="text-center py-8 text-gray-500">Loading certificates...</div>
+                  ) : sslCerts === null ? (
+                    <div className="text-center py-8 text-gray-500">Click Refresh to load certificates</div>
+                  ) : sslCerts.length === 0 ? (
+                    <div className="text-center py-8 text-gray-500">No certificates found</div>
+                  ) : (
+                    sslCerts.map((cert, i) => {
+                      const color = cert.status === 'valid' ? 'border-green-500/20 bg-green-500/5' : cert.status === 'warning' ? 'border-yellow-500/20 bg-yellow-500/5' : 'border-red-500/20 bg-red-500/5';
+                      const textColor = cert.status === 'valid' ? 'text-green-400' : cert.status === 'warning' ? 'text-yellow-400' : 'text-red-400';
+                      return (
+                        <div key={i} className={`card border ${color}`}>
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="font-semibold text-white text-sm">{cert.cn || cert.name}</span>
+                                <span className={`text-xs ${textColor}`}>
+                                  {cert.status === 'valid' ? 'Valid' : cert.status === 'warning' ? 'Expiring Soon' : 'Expired'}
+                                </span>
+                                {cert.daysLeft !== undefined && (
+                                  <span className="text-xs text-gray-500">{cert.daysLeft >= 0 ? `${cert.daysLeft}d left` : `Expired ${Math.abs(cert.daysLeft)}d ago`}</span>
+                                )}
+                              </div>
+                              <p className="text-xs text-gray-500 mt-1 font-mono truncate">{cert.path}</p>
+                              {cert.notAfter && (
+                                <p className="text-xs text-gray-500 mt-0.5">Expires: {new Date(cert.notAfter).toLocaleDateString()}</p>
+                              )}
+                            </div>
+                            {(cert.status === 'warning' || cert.status === 'expired') && (
+                              <button
+                                onClick={async () => {
+                                  setRenewRunning(true);
+                                  setActionResult('');
+                                  try {
+                                    const res = await axios.post('/api/ssl/renew');
+                                    setActionResult('Certificates renewed successfully');
+                                    fetchSslCerts();
+                                  } catch (err) {
+                                    setActionResult(`Error: ${err.response?.data?.error || 'Renewal failed'}`);
+                                  } finally {
+                                    setRenewRunning(false);
+                                    setTimeout(() => actionResultRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 50);
+                                  }
+                                }}
+                                disabled={renewRunning}
+                                className="shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium bg-yellow-600 hover:bg-yellow-500 disabled:opacity-50 text-white transition-colors"
+                              >
+                                {renewRunning ? <RefreshCw className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+                                Renew
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+
+                {/* Right panel: Issue + Renew all */}
+                <div className="space-y-4">
+                  <div className="card">
+                    <h3 className="text-sm font-semibold text-gray-300 mb-4">Issue Certificate</h3>
+                    <form onSubmit={async (e) => {
+                      e.preventDefault();
+                      setCertbotRunning(true);
+                      setActionResult('');
+                      try {
+                        const res = await axios.post('/api/ssl/certbot', { domain: certbotDomain, email: certbotEmail });
+                        setActionResult(`Certificate issued for ${certbotDomain}`);
+                        setCertbotDomain('');
+                        fetchSslCerts();
+                      } catch (err) {
+                        setActionResult(`Error: ${err.response?.data?.error || 'Certbot failed'}`);
+                      } finally {
+                        setCertbotRunning(false);
+                        setTimeout(() => actionResultRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 50);
+                      }
+                    }} className="space-y-3">
+                      <div>
+                        <label className="block text-xs text-gray-400 mb-1">Domain</label>
+                        <input type="text" value={certbotDomain} onChange={e => setCertbotDomain(e.target.value)} placeholder="example.com" className="input-field text-sm" required />
+                      </div>
+                      <div>
+                        <label className="block text-xs text-gray-400 mb-1">Email</label>
+                        <input type="email" value={certbotEmail} onChange={e => setCertbotEmail(e.target.value)} placeholder="admin@example.com" className="input-field text-sm" required />
+                      </div>
+                      <p className="text-xs text-gray-500">Requires port 80 to be publicly accessible.</p>
+                      <button type="submit" disabled={certbotRunning} className="btn-primary w-full text-sm flex items-center justify-center gap-2">
+                        {certbotRunning && <RefreshCw className="w-3.5 h-3.5 animate-spin" />}
+                        {certbotRunning ? 'Issuing...' : 'Issue Certificate'}
+                      </button>
+                    </form>
+                  </div>
+
+                  <div className="card">
+                    <h3 className="text-sm font-semibold text-gray-300 mb-2">Renew All</h3>
+                    <p className="text-xs text-gray-500 mb-3">Renew all certificates expiring within 30 days.</p>
+                    <button
+                      onClick={async () => {
+                        setRenewRunning(true);
+                        setActionResult('');
+                        try {
+                          await axios.post('/api/ssl/renew');
+                          setActionResult('All certificates renewed');
+                          fetchSslCerts();
+                        } catch (err) {
+                          setActionResult(`Error: ${err.response?.data?.error || 'Renewal failed'}`);
+                        } finally {
+                          setRenewRunning(false);
+                          setTimeout(() => actionResultRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 50);
+                        }
+                      }}
+                      disabled={renewRunning}
+                      className="btn-primary w-full text-sm flex items-center justify-center gap-2"
+                    >
+                      {renewRunning && <RefreshCw className="w-3.5 h-3.5 animate-spin" />}
+                      {renewRunning ? 'Renewing...' : 'Renew All Certificates'}
+                    </button>
+                  </div>
+                </div>
+              </div>
             </div>
           )}
 

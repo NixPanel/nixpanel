@@ -2,7 +2,13 @@ const Database = require('better-sqlite3');
 const bcrypt = require('bcryptjs');
 const path = require('path');
 
-const DB_PATH = process.env.DB_PATH || path.join(__dirname, '../../nixpanel.db');
+const isPkg = typeof process.pkg !== 'undefined';
+const PROJECT_ROOT = isPkg ? path.dirname(process.execPath) : path.join(__dirname, '../..');
+const DB_PATH = process.env.DB_PATH
+  ? (path.isAbsolute(process.env.DB_PATH)
+      ? process.env.DB_PATH
+      : path.join(PROJECT_ROOT, process.env.DB_PATH))
+  : path.join(PROJECT_ROOT, 'nixpanel.db');
 
 let db;
 

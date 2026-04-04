@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Bot, Send, User, Copy, Trash2, AlertCircle, Sparkles, Code } from 'lucide-react';
+import { Bot, Send, User, Copy, Trash2, AlertCircle, Sparkles, Code, ExternalLink, Settings } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import Sidebar from '../components/Sidebar.jsx';
 
@@ -82,11 +83,47 @@ const QUICK_PROMPTS = [
   'Write a bash script to backup /etc directory',
 ];
 
+function AiKeyRequiredBanner() {
+  const navigate = useNavigate();
+  return (
+    <div className="h-full flex items-center justify-center p-6">
+      <div className="max-w-sm w-full bg-dark-700 border border-dark-600 rounded-2xl p-6 text-center">
+        <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-purple-500/20 to-cyan-500/20 border border-purple-500/20 flex items-center justify-center mx-auto mb-4">
+          <Bot className="w-6 h-6 text-purple-400" />
+        </div>
+        <h3 className="text-base font-semibold text-white mb-2">AI Assistant needs your API key</h3>
+        <p className="text-sm text-gray-400 mb-5">
+          To use AI features you need to add your Anthropic API key in settings.
+        </p>
+        <div className="flex items-center justify-center gap-3">
+          <button
+            onClick={() => navigate('/settings#ai-config')}
+            className="btn-primary text-sm py-2 flex items-center gap-2"
+          >
+            <Settings className="w-3.5 h-3.5" />
+            Go to Settings
+          </button>
+          <a
+            href="https://console.anthropic.com"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="btn-secondary text-sm py-2 flex items-center gap-2"
+          >
+            Get API Key
+            <ExternalLink className="w-3.5 h-3.5" />
+          </a>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function AI() {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState('');
+  const [aiKeyRequired, setAiKeyRequired] = useState(false);
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
   const readerRef = useRef(null);
@@ -122,6 +159,12 @@ export default function AI() {
 
       if (!response.ok) {
         const err = await response.json();
+        if (err.error === 'AI_KEY_REQUIRED') {
+          setAiKeyRequired(true);
+          setMessages(prev => prev.slice(0, -1));
+          setStreaming(false);
+          return;
+        }
         throw new Error(err.error || 'Request failed');
       }
 
@@ -225,7 +268,9 @@ export default function AI() {
 
         {/* Messages */}
         <div className="flex-1 overflow-y-auto px-6 py-4">
-          {messages.length === 0 ? (
+          {aiKeyRequired ? (
+            <AiKeyRequiredBanner />
+          ) : messages.length === 0 ? (
             <div className="h-full flex flex-col items-center justify-center">
               <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-purple-500/20 to-cyan-500/20 border border-purple-500/20 flex items-center justify-center mb-4">
                 <Sparkles className="w-8 h-8 text-purple-400" />

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { KeyRound, Trash2, Plus, Copy, AlertTriangle, RefreshCw, Eye, EyeOff } from 'lucide-react';
+import { KeyRound, Trash2, Plus, Copy, AlertTriangle, RefreshCw, Eye, EyeOff, Download, ShieldCheck } from 'lucide-react';
 import axios from 'axios';
 import Sidebar from '../components/Sidebar.jsx';
 import Header from '../components/Header.jsx';
@@ -23,10 +23,16 @@ export default function SSH() {
   const [genType, setGenType] = useState('ed25519');
   const [genBits, setGenBits] = useState(4096);
   const [genComment, setGenComment] = useState('');
+  const [genName, setGenName] = useState('');
   const [generating, setGenerating] = useState(false);
   const [generatedKeys, setGeneratedKeys] = useState(null);
   const [showPrivate, setShowPrivate] = useState(false);
   const [copied, setCopied] = useState('');
+
+  // Stored keypairs
+  const [keypairs, setKeypairs] = useState([]);
+  const [keypairsLoading, setKeypairsLoading] = useState(false);
+  const [authorizingKey, setAuthorizingKey] = useState(null);
 
   const targetUser = customUser.trim() || selectedUser;
 
@@ -47,6 +53,67 @@ export default function SSH() {
   };
 
   useEffect(() => { fetchKeys(); }, [targetUser]);
+
+  const fetchKeypairs = async () => {
+    setKeypairsLoading(true);
+    try {
+      const res = await axios.get('/api/ssh/keypairs');
+      setKeypairs(res.data.keypairs || []);
+    } catch (_) {
+      setKeypairs([]);
+    } finally {
+      setKeypairsLoading(false);
+    }
+  };
+
+  useEffect(() => { fetchKeypairs(); }, []);
+
+  const downloadKey = async (name, type) => {
+    try {
+      const res = await axios.get(`/api/ssh/keypairs/${encodeURIComponent(name)}/download?type=${type}`, {
+        responseType: 'blob',
+      });
+      const url = URL.createObjectURL(res.data);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = type === 'private' ? name : `${name}.pub`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setOutput(`Error: ${err.response?.data?.error || 'Download failed'}`);
+      setOutputType('error');
+    }
+  };
+
+  const handleAuthorize = async (keyName) => {
+    setAuthorizingKey(keyName);
+    try {
+      await axios.post(`/api/ssh/keypairs/${encodeURIComponent(keyName)}/authorize`, { username: targetUser });
+      setOutput(`Public key "${keyName}" added to authorized_keys for ${targetUser}`);
+      setOutputType('success');
+      fetchKeys();
+    } catch (err) {
+      setOutput(`Error: ${err.response?.data?.error || 'Failed to authorize key'}`);
+      setOutputType('error');
+    } finally {
+      setAuthorizingKey(null);
+    }
+  };
+
+  const handleDeleteKeypair = async (name) => {
+    if (!confirm(`Delete key pair "${name}"? This cannot be undone.`)) return;
+    try {
+      await axios.delete(`/api/ssh/keypairs/${encodeURIComponent(name)}`);
+      setOutput(`Key pair "${name}" deleted.`);
+      setOutputType('success');
+      fetchKeypairs();
+    } catch (err) {
+      setOutput(`Error: ${err.response?.data?.error || 'Failed to delete key pair'}`);
+      setOutputType('error');
+    }
+  };
 
   const handleAddKey = async (e) => {
     e.preventDefault();
@@ -88,10 +155,13 @@ export default function SSH() {
         type: genType,
         bits: genBits,
         comment: genComment,
+        name: genName.trim(),
       });
       setGeneratedKeys(res.data);
-      setOutput('Key pair generated successfully.');
+      setGenName('');
+      setOutput(`Key pair "${res.data.name}" generated and saved to server.`);
       setOutputType('success');
+      fetchKeypairs();
     } catch (err) {
       setOutput(`Error: ${err.response?.data?.error || 'Key generation failed'}`);
       setOutputType('error');
@@ -268,6 +338,16 @@ export default function SSH() {
                     </div>
                   )}
                   <div>
+                    <label className="block text-xs text-gray-400 mb-1">Name (optional)</label>
+                    <input
+                      type="text"
+                      value={genName}
+                      onChange={e => setGenName(e.target.value)}
+                      placeholder="my-server-key"
+                      className="input-field text-sm"
+                    />
+                  </div>
+                  <div>
                     <label className="block text-xs text-gray-400 mb-1">Comment (optional)</label>
                     <input
                       type="text"
@@ -295,10 +375,16 @@ export default function SSH() {
                   <div>
                     <div className="flex items-center justify-between mb-1">
                       <label className="text-xs text-gray-400">Public Key</label>
-                      <button onClick={() => copyToClipboard(generatedKeys.publicKey, 'pub')} className="text-xs text-blue-400 hover:text-blue-300 flex items-center gap-1">
-                        <Copy className="w-3 h-3" />
-                        {copied === 'pub' ? 'Copied!' : 'Copy'}
-                      </button>
+                      <div className="flex items-center gap-2">
+                        <button onClick={() => copyToClipboard(generatedKeys.publicKey, 'pub')} className="text-xs text-blue-400 hover:text-blue-300 flex items-center gap-1">
+                          <Copy className="w-3 h-3" />
+                          {copied === 'pub' ? 'Copied!' : 'Copy'}
+                        </button>
+                        <button onClick={() => downloadKey(generatedKeys.name, 'public')} className="text-xs text-green-400 hover:text-green-300 flex items-center gap-1">
+                          <Download className="w-3 h-3" />
+                          Download
+                        </button>
+                      </div>
                     </div>
                     <textarea readOnly value={generatedKeys.publicKey} className="input-field font-mono text-xs h-16 resize-none text-green-300" />
                   </div>
@@ -315,6 +401,10 @@ export default function SSH() {
                           <Copy className="w-3 h-3" />
                           {copied === 'priv' ? 'Copied!' : 'Copy'}
                         </button>
+                        <button onClick={() => downloadKey(generatedKeys.name, 'private')} className="text-xs text-green-400 hover:text-green-300 flex items-center gap-1">
+                          <Download className="w-3 h-3" />
+                          Download
+                        </button>
                       </div>
                     </div>
                     {showPrivate ? (
@@ -322,14 +412,82 @@ export default function SSH() {
                     ) : (
                       <div className="input-field text-center text-gray-600 text-xs py-3">Hidden — click Show to reveal</div>
                     )}
-                    <p className="text-xs text-red-400 mt-1 flex items-center gap-1">
-                      <AlertTriangle className="w-3 h-3" />
-                      Save the private key securely. It won't be stored on the server.
+                    <p className="text-xs text-green-400 mt-1 flex items-center gap-1">
+                      <ShieldCheck className="w-3 h-3" />
+                      Key pair saved to server — accessible from Stored Key Pairs below.
                     </p>
                   </div>
                 </div>
               )}
             </div>
+          </div>
+
+          {/* Stored Key Pairs */}
+          <div className="mt-6">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-sm font-semibold text-gray-300">Stored Key Pairs</h3>
+              <button onClick={fetchKeypairs} disabled={keypairsLoading} className="btn-primary text-xs py-1.5 flex items-center gap-1.5">
+                {keypairsLoading ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+                Refresh
+              </button>
+            </div>
+
+            {keypairsLoading ? (
+              <div className="text-center py-6 text-gray-500 text-sm">Loading...</div>
+            ) : keypairs.length === 0 ? (
+              <div className="text-center py-6 text-gray-600 text-sm border border-dark-700 rounded-lg">
+                No stored key pairs — generate one above.
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {keypairs.map(kp => (
+                  <div key={kp.name} className="card flex items-start gap-3">
+                    <KeyRound className="w-4 h-4 text-blue-400 flex-shrink-0 mt-0.5" />
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="font-semibold text-white text-sm font-mono">{kp.name}</span>
+                        <span className="badge badge-blue text-xs">{kp.type}</span>
+                        {kp.comment && <span className="text-xs text-gray-400">{kp.comment}</span>}
+                      </div>
+                      {kp.fingerprint && <p className="text-xs text-gray-500 font-mono mt-0.5">{kp.fingerprint}</p>}
+                      <p className="text-xs text-gray-600 mt-0.5">Created: {new Date(kp.createdAt).toLocaleString()}</p>
+                    </div>
+                    <div className="flex items-center gap-1.5 flex-shrink-0 flex-wrap justify-end">
+                      <button
+                        onClick={() => downloadKey(kp.name, 'public')}
+                        className="flex items-center gap-1 px-2 py-1 rounded text-xs text-green-400 hover:bg-green-500/10 border border-green-500/20 transition-colors"
+                        title="Download public key"
+                      >
+                        <Download className="w-3 h-3" /> Public
+                      </button>
+                      <button
+                        onClick={() => downloadKey(kp.name, 'private')}
+                        className="flex items-center gap-1 px-2 py-1 rounded text-xs text-yellow-400 hover:bg-yellow-500/10 border border-yellow-500/20 transition-colors"
+                        title="Download private key"
+                      >
+                        <Download className="w-3 h-3" /> Private
+                      </button>
+                      <button
+                        onClick={() => handleAuthorize(kp.name)}
+                        disabled={authorizingKey === kp.name}
+                        className="flex items-center gap-1 px-2 py-1 rounded text-xs text-blue-400 hover:bg-blue-500/10 border border-blue-500/20 transition-colors disabled:opacity-50"
+                        title={`Add to authorized_keys for ${targetUser}`}
+                      >
+                        {authorizingKey === kp.name ? <RefreshCw className="w-3 h-3 animate-spin" /> : <ShieldCheck className="w-3 h-3" />}
+                        Authorize
+                      </button>
+                      <button
+                        onClick={() => handleDeleteKeypair(kp.name)}
+                        className="p-1.5 text-red-400 hover:bg-red-500/10 rounded transition-colors"
+                        title="Delete key pair"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       </main>

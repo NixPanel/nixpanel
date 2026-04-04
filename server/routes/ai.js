@@ -2,6 +2,7 @@ const express = require('express');
 const Anthropic = require('@anthropic-ai/sdk');
 const { authenticateToken } = require('../middleware/auth');
 const { auditLog } = require('../db/database');
+const { getAnthropicApiKey } = require('../utils/apiKey');
 
 const router = express.Router();
 
@@ -35,11 +36,16 @@ router.post('/chat', authenticateToken, async (req, res) => {
     return res.status(400).json({ error: 'Message too long (max 4000 characters)' });
   }
 
-  if (!process.env.ANTHROPIC_API_KEY) {
-    return res.status(503).json({ error: 'AI assistant not configured. Set ANTHROPIC_API_KEY in .env' });
+  const anthropicApiKey = getAnthropicApiKey();
+  if (!anthropicApiKey) {
+    return res.status(403).json({
+      error: 'AI_KEY_REQUIRED',
+      message: 'Please add your Anthropic API key in Settings → AI Configuration to use AI features.',
+      setupUrl: '/settings#ai-config',
+    });
   }
 
-  const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+  const client = new Anthropic({ apiKey: anthropicApiKey });
 
   // Sanitize and validate history
   const messages = [
@@ -111,11 +117,16 @@ router.post('/analyze', authenticateToken, async (req, res) => {
     return res.status(400).json({ error: 'Content too long (max 8000 characters)' });
   }
 
-  if (!process.env.ANTHROPIC_API_KEY) {
-    return res.status(503).json({ error: 'AI assistant not configured' });
+  const anthropicApiKey = getAnthropicApiKey();
+  if (!anthropicApiKey) {
+    return res.status(403).json({
+      error: 'AI_KEY_REQUIRED',
+      message: 'Please add your Anthropic API key in Settings → AI Configuration to use AI features.',
+      setupUrl: '/settings#ai-config',
+    });
   }
 
-  const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+  const client = new Anthropic({ apiKey: anthropicApiKey });
 
   const prompts = {
     log: `Analyze this Linux system log and provide: 1) Summary of what happened, 2) Any errors or warnings, 3) Recommended actions if any issues found.\n\nLog content:\n${content}`,

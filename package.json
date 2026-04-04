@@ -7,7 +7,24 @@
     "start": "node server/index.js",
     "dev": "nodemon server/index.js",
     "build:client": "cd client && npm install && npm run build",
-    "install:all": "npm install && npm run build:client"
+    "install:all": "npm install && npm run build:client",
+    "build:binary": "pkg server/index.js --targets node20-linux-x64 --output dist/nixpanel --compress GZip",
+    "build:binary:all": "pkg server/index.js --targets node20-linux-x64,node20-macos-x64,node20-win-x64 --output dist/nixpanel --compress GZip",
+    "release": "npm run build:binary && cp dist/nixpanel /tmp/nixpanel-release"
+  },
+  "pkg": {
+    "scripts": "server/**/*.js",
+    "assets": [
+      "client/dist/**/*",
+      "server/db/**/*",
+      ".env.example",
+      "node_modules/better-sqlite3/build/Release/better_sqlite3.node",
+      "node_modules/better-sqlite3/build/Release/*.node"
+    ],
+    "targets": [
+      "node20-linux-x64"
+    ],
+    "outputPath": "dist"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
@@ -25,6 +42,7 @@
     "ws": "^8.17.0"
   },
   "devDependencies": {
+    "@yao-pkg/pkg": "^5.11.5",
     "nodemon": "^3.1.0"
   },
   "engines": {

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
 import {
   LayoutDashboard, Package, Users, Shield,
@@ -6,16 +6,17 @@ import {
   Server, ChevronRight, Clock, Key, Lock,
   Archive, Cpu, Globe, HardDrive, ShieldAlert,
   Terminal, Zap, Network, Crown, ArrowRight,
-  Mail, Database, Code, Monitor,
+  Mail, Database, Code, Monitor, Settings,
 } from 'lucide-react';
+import axios from 'axios';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useLicense } from '../context/LicenseContext.jsx';
 
 const navItems = [
   { path: '/', icon: LayoutDashboard, label: 'Dashboard', exact: true },
   { type: 'separator', label: 'AI' },
-  { path: '/troubleshoot', icon: Zap, label: 'AI Troubleshoot', badge: 'AI', highlight: true, pro: true },
-  { path: '/ai', icon: Bot, label: 'AI Assistant', pro: true },
+  { path: '/troubleshoot', icon: Zap, label: 'AI Troubleshoot', badge: 'AI', highlight: true, pro: true, aiFeature: true },
+  { path: '/ai', icon: Bot, label: 'AI Assistant', pro: true, aiFeature: true },
   { type: 'separator', label: 'System' },
   { path: '/processes', icon: Cpu, label: 'Processes', pro: true },
   { path: '/services', icon: Server, label: 'Services' },
@@ -50,6 +51,14 @@ export default function Sidebar() {
   const { isPro } = useLicense();
   const navigate = useNavigate();
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [aiKeyConfigured, setAiKeyConfigured] = useState(null);
+
+  useEffect(() => {
+    if (!isPro) return;
+    axios.get('/api/settings/ai-key-status')
+      .then(res => setAiKeyConfigured(res.data.configured))
+      .catch(() => setAiKeyConfigured(false));
+  }, [isPro]);
 
   const handleLogout = () => {
     logout();
@@ -80,8 +89,9 @@ export default function Sidebar() {
             );
           }
 
-          const { path, icon: Icon, label, exact, badge, highlight, pro } = item;
+          const { path, icon: Icon, label, exact, badge, highlight, pro, aiFeature } = item;
           const isLocked = pro && !isPro;
+          const needsAiSetup = aiFeature && isPro && aiKeyConfigured === false;
 
           if (highlight) {
             if (isLocked) {
@@ -115,6 +125,9 @@ export default function Sidebar() {
                   <>
                     <Icon className={`w-4 h-4 flex-shrink-0 ${isActive ? 'text-blue-300' : 'text-blue-400'}`} />
                     <span className="flex-1">{label}</span>
+                    {needsAiSetup && (
+                      <span title="API key required" className="text-xs text-yellow-500">⚙</span>
+                    )}
                     {badge && (
                       <span className="text-xs bg-blue-600/30 text-blue-300 border border-blue-500/30 px-1.5 py-0.5 rounded-full font-semibold">
                         {badge}
@@ -159,6 +172,9 @@ export default function Sidebar() {
                 <>
                   <Icon className={`w-4 h-4 flex-shrink-0 ${isActive ? 'text-blue-400' : 'text-gray-500 group-hover:text-gray-300'}`} />
                   <span className="flex-1">{label}</span>
+                  {needsAiSetup && (
+                    <span title="API key required" className="text-xs text-yellow-500">⚙</span>
+                  )}
                   {isActive && <ChevronRight className="w-3 h-3 text-blue-400" />}
                 </>
               )}
@@ -197,6 +213,18 @@ export default function Sidebar() {
             </div>
           </div>
         </div>
+        <NavLink
+          to="/settings"
+          onClick={() => setMobileOpen(false)}
+          className={({ isActive }) =>
+            `flex items-center gap-3 px-3 py-2 w-full text-sm rounded-lg transition-colors ${
+              isActive ? 'text-blue-400 bg-blue-600/10' : 'text-gray-400 hover:text-gray-200 hover:bg-dark-600'
+            }`
+          }
+        >
+          <Settings className="w-4 h-4" />
+          Settings
+        </NavLink>
         <button
           onClick={handleLogout}
           className="flex items-center gap-3 px-3 py-2 w-full text-sm text-gray-400 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors"

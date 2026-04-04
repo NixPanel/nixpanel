@@ -153,7 +153,7 @@ router.post('/install', authenticateToken, requireRole('admin'), async (req, res
 
     auditLog(req.user.id, req.user.username, 'PACKAGE_INSTALL', safe, null, req.ip);
 
-    const { stdout, stderr } = await execAsync(`sudo ${command}`, { timeout: 120000 });
+    const { stdout, stderr } = await execAsync(command, { timeout: 120000 });
     res.json({ success: true, output: stdout + stderr });
   } catch (err) {
     console.error('[Packages] Install error:', err);
@@ -180,7 +180,7 @@ router.delete('/:name', authenticateToken, requireRole('admin'), async (req, res
 
     auditLog(req.user.id, req.user.username, 'PACKAGE_REMOVE', safe, null, req.ip);
 
-    const { stdout, stderr } = await execAsync(`sudo ${command}`, { timeout: 120000 });
+    const { stdout, stderr } = await execAsync(command, { timeout: 120000 });
     res.json({ success: true, output: stdout + stderr });
   } catch (err) {
     console.error('[Packages] Remove error:', err);

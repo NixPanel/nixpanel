@@ -3,7 +3,7 @@ const { exec } = require('child_process');
 const { promisify } = require('util');
 const fs = require('fs');
 const { authenticateToken, requireRole } = require('../middleware/auth');
-const { auditLog } = require('../db/database');
+const { auditLog, getSetting } = require('../db/database');
 
 const execAsync = promisify(exec);
 const router = express.Router();
@@ -39,6 +39,96 @@ async function run(cmd, timeout = 15000) {
   }
 }
 
+// Detect distro from /etc/os-release or uname
+async function getDistroInfo() {
+  const r = await run('cat /etc/os-release 2>/dev/null', 3000);
+  const text = r.stdout.toLowerCase();
+  if (text.includes('ubuntu') || text.includes('debian') || text.includes('mint') || text.includes('pop!_os') || text.includes('kali')) return 'debian';
+  if (text.includes('fedora')) return 'fedora';
+  if (text.includes('almalinux') || text.includes('rocky') || text.includes('centos') || text.includes('rhel') || text.includes('oracle')) return 'rhel';
+  if (text.includes('arch') || text.includes('manjaro') || text.includes('endeavour')) return 'arch';
+  if (text.includes('alpine')) return 'alpine';
+  if (text.includes('opensuse') || text.includes('sles')) return 'suse';
+  const uname = await run('uname -s 2>/dev/null', 3000);
+  const sys = uname.stdout.trim().toLowerCase();
+  if (sys === 'freebsd') return 'freebsd';
+  if (sys === 'openbsd') return 'openbsd';
+  if (sys === 'netbsd') return 'netbsd';
+  return 'unknown';
+}
+
+// Install a package cross-distro. Returns { error } on failure or {} on success.
+async function installPackage(pkg) {
+  const distro = await getDistroInfo();
+  let result;
+  switch (distro) {
+    case 'debian':
+      result = await run(`apt-get install -y ${pkg} 2>&1`, 180000);
+      break;
+    case 'fedora':
+      result = await run(`dnf install -y ${pkg} 2>&1`, 180000);
+      break;
+    case 'rhel':
+      // Enable EPEL first, then install
+      await run('dnf install -y epel-release 2>&1', 60000);
+      result = await run(`dnf install -y ${pkg} 2>&1`, 180000);
+      break;
+    case 'arch':
+      result = await run(`pacman -Sy --noconfirm ${pkg} 2>&1`, 180000);
+      break;
+    case 'alpine':
+      result = await run(`apk add --no-cache ${pkg} 2>&1`, 180000);
+      break;
+    case 'suse':
+      result = await run(`zypper install -y ${pkg} 2>&1`, 180000);
+      break;
+    case 'freebsd':
+      result = await run(`pkg install -y ${pkg} 2>&1`, 180000);
+      break;
+    case 'openbsd':
+    case 'netbsd':
+      result = await run(`pkg_add ${pkg} 2>&1`, 180000);
+      break;
+    default: {
+      // Fallback: try common package managers in order
+      const managers = [
+        ['apt-get', `apt-get install -y ${pkg} 2>&1`],
+        ['dnf',     `dnf install -y ${pkg} 2>&1`],
+        ['yum',     `yum install -y ${pkg} 2>&1`],
+        ['pacman',  `pacman -Sy --noconfirm ${pkg} 2>&1`],
+        ['apk',     `apk add --no-cache ${pkg} 2>&1`],
+        ['zypper',  `zypper install -y ${pkg} 2>&1`],
+        ['pkg',     `pkg install -y ${pkg} 2>&1`],
+      ];
+      for (const [bin, cmd] of managers) {
+        const which = await run(`which ${bin} 2>/dev/null`, 3000);
+        if (!which.error && which.stdout.trim()) {
+          result = await run(cmd, 180000);
+          break;
+        }
+      }
+      if (!result) return { error: `Could not find a package manager to install ${pkg}` };
+    }
+  }
+  if (result.error) {
+    return { error: `Failed to install ${pkg}: ${(result.stderr || result.stdout || result.error).trim()}` };
+  }
+  return {};
+}
+
+// Set or replace a value in sshd_config (handles active, commented-out, or missing lines)
+function setSshConfigValue(config, key, value) {
+  const activeRegex = new RegExp(`^(\\s*${key}\\s+.*)`, 'im');
+  if (activeRegex.test(config)) {
+    return config.replace(activeRegex, `${key} ${value}`);
+  }
+  const commentedRegex = new RegExp(`^(\\s*#\\s*${key}\\s+.*)`, 'im');
+  if (commentedRegex.test(config)) {
+    return config.replace(commentedRegex, `${key} ${value}`);
+  }
+  return config.trimEnd() + `\n\n# Added by NixPanel\n${key} ${value}\n`;
+}
+
 // GET /api/security/score
 router.get('/score', async (req, res) => {
   try {
@@ -56,7 +146,7 @@ router.get('/score', async (req, res) => {
       const rootLogin = rootLoginMatch ? rootLoginMatch[1].toLowerCase() : 'yes';
       if (rootLogin !== 'no') {
         score -= 15;
-        findings.push({ severity: 'high', category: 'SSH', message: `PermitRootLogin is "${rootLogin}" - should be "no"` });
+        findings.push({ severity: 'high', category: 'SSH', message: `PermitRootLogin is "${rootLogin}" - should be "no"`, fixId: 'ssh_permit_root_login' });
       } else {
         findings.push({ severity: 'ok', category: 'SSH', message: 'PermitRootLogin is disabled' });
       }
@@ -65,7 +155,7 @@ router.get('/score', async (req, res) => {
       const passAuth = passAuthMatch ? passAuthMatch[1].toLowerCase() : 'yes';
       if (passAuth !== 'no') {
         score -= 15;
-        findings.push({ severity: 'high', category: 'SSH', message: `PasswordAuthentication is "${passAuth}" - consider disabling` });
+        findings.push({ severity: 'high', category: 'SSH', message: `PasswordAuthentication is "${passAuth}" - consider disabling`, fixId: 'ssh_password_auth' });
       } else {
         findings.push({ severity: 'ok', category: 'SSH', message: 'Password authentication is disabled' });
       }
@@ -84,10 +174,49 @@ router.get('/score', async (req, res) => {
     const f2bResult = await run('fail2ban-client status 2>/dev/null', 10000);
     if (f2bResult.error || !f2bResult.stdout.includes('Jail list')) {
       score -= 10;
-      findings.push({ severity: 'medium', category: 'Fail2Ban', message: 'fail2ban is not running or not installed' });
+      findings.push({ severity: 'medium', category: 'Fail2Ban', message: 'fail2ban is not running or not installed', fixId: 'fail2ban_start' });
     } else {
       findings.push({ severity: 'ok', category: 'Fail2Ban', message: 'fail2ban is active' });
     }
+
+    // Check SSL certs
+    try {
+      const leDir = '/etc/letsencrypt/live';
+      if (fs.existsSync(leDir)) {
+        const entries = fs.readdirSync(leDir, { withFileTypes: true });
+        let earliest = null;
+        for (const entry of entries) {
+          if (!entry.isDirectory()) continue;
+          const certPath = `${leDir}/${entry.name}/cert.pem`;
+          if (!fs.existsSync(certPath)) continue;
+          const r = await run(`openssl x509 -in "${certPath}" -noout -enddate 2>/dev/null`, 5000);
+          const m = r.stdout.match(/notAfter=(.+)/);
+          if (m) {
+            const exp = new Date(m[1].trim());
+            const days = Math.floor((exp - new Date()) / 86400000);
+            if (earliest === null || days < earliest) earliest = days;
+          }
+        }
+        if (earliest !== null) {
+          if (earliest < 0) {
+            score -= 15;
+            findings.push({ severity: 'high', category: 'SSL', message: `SSL certificate expired ${Math.abs(earliest)} days ago`, fixId: 'ssl_renew' });
+          } else if (earliest < 14) {
+            score -= 10;
+            findings.push({ severity: 'high', category: 'SSL', message: `SSL certificate expires in ${earliest} days`, fixId: 'ssl_renew' });
+          } else if (earliest < 30) {
+            score -= 5;
+            findings.push({ severity: 'medium', category: 'SSL', message: `SSL certificate expires in ${earliest} days`, fixId: 'ssl_renew' });
+          } else {
+            findings.push({ severity: 'ok', category: 'SSL', message: `SSL certificates valid (${earliest} days remaining)` });
+          }
+        } else {
+          findings.push({ severity: 'info', category: 'SSL', message: 'No Let\'s Encrypt certificates found' });
+        }
+      } else {
+        findings.push({ severity: 'info', category: 'SSL', message: 'No Let\'s Encrypt certificates found' });
+      }
+    } catch (_) {}
 
     // Check for available updates
     const updatesResult = await run('apt list --upgradable 2>/dev/null | grep -c upgradable || dnf check-update --quiet 2>/dev/null | grep -c "^[a-zA-Z]" || echo "0"', 20000);
@@ -267,6 +396,7 @@ router.get('/ssh-config', async (req, res) => {
       value: rootLogin,
       pass: rootLogin.toLowerCase() === 'no',
       recommendation: 'Should be "no" to prevent direct root SSH access',
+      fixId: 'ssh_permit_root_login',
     });
 
     const passAuth = getVal('PasswordAuthentication', 'yes');
@@ -275,6 +405,7 @@ router.get('/ssh-config', async (req, res) => {
       value: passAuth,
       pass: passAuth.toLowerCase() === 'no',
       recommendation: 'Disable and use key-based authentication only',
+      fixId: 'ssh_password_auth',
     });
 
     const port = getVal('Port', '22');
@@ -283,6 +414,7 @@ router.get('/ssh-config', async (req, res) => {
       value: port,
       pass: port !== '22',
       recommendation: 'Consider changing from default port 22',
+      // No fixId - changing SSH port without care could lock users out
     });
 
     const maxAuthTries = getVal('MaxAuthTries', '6');
@@ -292,6 +424,7 @@ router.get('/ssh-config', async (req, res) => {
       value: maxAuthTries,
       pass: maxAuthNum <= 3,
       recommendation: 'Should be 3 or less to limit brute force attempts',
+      fixId: 'ssh_max_auth_tries',
     });
 
     const protocol = getVal('Protocol', '2');
@@ -308,6 +441,7 @@ router.get('/ssh-config', async (req, res) => {
       value: x11Forward,
       pass: x11Forward.toLowerCase() === 'no',
       recommendation: 'Disable X11Forwarding if not needed',
+      fixId: 'ssh_x11_forwarding',
     });
 
     const allowAgentForwarding = getVal('AllowAgentForwarding', 'yes');
@@ -316,6 +450,7 @@ router.get('/ssh-config', async (req, res) => {
       value: allowAgentForwarding,
       pass: allowAgentForwarding.toLowerCase() === 'no',
       recommendation: 'Disable agent forwarding if not needed',
+      fixId: 'ssh_agent_forwarding',
     });
 
     const loginGraceTime = getVal('LoginGraceTime', '120');
@@ -325,6 +460,7 @@ router.get('/ssh-config', async (req, res) => {
       value: loginGraceTime,
       pass: lgTime <= 30,
       recommendation: 'Should be 30 seconds or less',
+      fixId: 'ssh_login_grace_time',
     });
 
     res.json({ checks, rawConfig: config });
@@ -402,6 +538,85 @@ router.get('/suid-files', async (req, res) => {
   } catch (err) {
     console.error('[Security] SUID files error:', err);
     res.status(500).json({ error: 'Failed to scan SUID files' });
+  }
+});
+
+// POST /api/security/fix
+router.post('/fix', async (req, res) => {
+  const { fixId } = req.body;
+  if (!fixId || typeof fixId !== 'string' || !/^[a-z0-9_]+$/.test(fixId)) {
+    return res.status(400).json({ error: 'Invalid fixId' });
+  }
+
+  auditLog(req.user.id, req.user.username, 'SECURITY_FIX', fixId, null, req.ip);
+
+  try {
+    const SSH_FIXES = {
+      ssh_permit_root_login:  { key: 'PermitRootLogin',         value: 'no' },
+      ssh_password_auth:      { key: 'PasswordAuthentication',  value: 'no' },
+      ssh_max_auth_tries:     { key: 'MaxAuthTries',            value: '3'  },
+      ssh_x11_forwarding:     { key: 'X11Forwarding',           value: 'no' },
+      ssh_agent_forwarding:   { key: 'AllowAgentForwarding',    value: 'no' },
+      ssh_login_grace_time:   { key: 'LoginGraceTime',          value: '30' },
+    };
+
+    if (SSH_FIXES[fixId]) {
+      const { key, value } = SSH_FIXES[fixId];
+      let config;
+      try {
+        config = fs.readFileSync('/etc/ssh/sshd_config', 'utf8');
+      } catch (_) {
+        return res.status(500).json({ error: 'Could not read /etc/ssh/sshd_config' });
+      }
+
+      const updated = setSshConfigValue(config, key, value);
+      fs.writeFileSync('/etc/ssh/sshd_config', updated, 'utf8');
+
+      const restart = await run('systemctl restart sshd 2>&1 || systemctl restart ssh 2>&1', 15000);
+      if (restart.error && !(restart.stdout + restart.stderr).trim()) {
+        return res.status(500).json({ error: `Config updated but failed to restart SSH: ${restart.error}` });
+      }
+
+      return res.json({ success: true, message: `Set ${key} to "${value}" and restarted SSH` });
+    }
+
+    if (fixId === 'fail2ban_start') {
+      // Check if fail2ban service unit exists (i.e. is installed)
+      const check = await run('systemctl cat fail2ban.service 2>&1', 5000);
+      const notInstalled = !!check.error;
+
+      if (notInstalled) {
+        const installResult = await installPackage('fail2ban');
+        if (installResult.error) {
+          return res.status(500).json({ error: installResult.error });
+        }
+      }
+
+      // For systems using systemd
+      const result = await run('systemctl enable fail2ban 2>&1 && systemctl start fail2ban 2>&1', 15000);
+      if (result.error) {
+        const output = (result.stderr || result.stdout || result.error).trim();
+        return res.status(500).json({ error: `Failed to start fail2ban: ${output}` });
+      }
+      return res.json({ success: true, message: notInstalled ? 'fail2ban installed, enabled and started' : 'fail2ban enabled and started' });
+    }
+
+    if (fixId === 'ssl_renew') {
+      const domain = getSetting('ssl_domain');
+      const cmd = domain
+        ? `certbot renew --non-interactive --cert-name ${domain} 2>&1`
+        : 'certbot renew --non-interactive 2>&1';
+      const result = await run(cmd, 300000);
+      if (result.error) {
+        return res.status(500).json({ error: `Renewal failed: ${(result.stderr || result.stdout || result.error).trim()}` });
+      }
+      return res.json({ success: true, message: 'SSL certificates renewed successfully' });
+    }
+
+    return res.status(400).json({ error: 'Unknown fixId' });
+  } catch (err) {
+    console.error('[Security] Fix error:', err);
+    res.status(500).json({ error: err.message || 'Fix failed' });
   }
 });
 

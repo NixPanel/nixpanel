@@ -4,6 +4,7 @@ const { promisify } = require('util');
 const Anthropic = require('@anthropic-ai/sdk');
 const { authenticateToken, requireRole } = require('../middleware/auth');
 const { auditLog } = require('../db/database');
+const { getAnthropicApiKey } = require('../utils/apiKey');
 
 const execAsync = promisify(exec);
 const router = express.Router();
@@ -133,9 +134,12 @@ router.post('/diagnose', async (req, res) => {
     return res.status(400).json({ error: 'Problem description or quickAction required' });
   }
 
-  if (!process.env.ANTHROPIC_API_KEY) {
-    return res.status(503).json({
-      error: 'AI not configured. Set ANTHROPIC_API_KEY in your .env file to use AI Troubleshoot.',
+  const anthropicApiKey = getAnthropicApiKey();
+  if (!anthropicApiKey) {
+    return res.status(403).json({
+      error: 'AI_KEY_REQUIRED',
+      message: 'Please add your Anthropic API key in Settings → AI Configuration to use AI features.',
+      setupUrl: '/settings#ai-config',
     });
   }
 
@@ -181,7 +185,7 @@ Please:
 6. Be concise but thorough`;
 
     // Step 3: Stream AI response
-    const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+    const client = new Anthropic({ apiKey: anthropicApiKey });
 
     const stream = await client.messages.stream({
       model: 'claude-opus-4-6',

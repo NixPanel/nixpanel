@@ -25,6 +25,7 @@ import Troubleshoot from './pages/Troubleshoot.jsx';
 import Upgrade from './pages/Upgrade.jsx';
 import Pricing from './pages/Pricing.jsx';
 import CheckoutSuccess from './pages/CheckoutSuccess.jsx';
+import Settings from './pages/Settings.jsx';
 import HostingDashboard from './pages/hosting/HostingDashboard.jsx';
 import Domains from './pages/hosting/Domains.jsx';
 import Email from './pages/hosting/Email.jsx';
@@ -76,6 +77,7 @@ export default function App() {
           <Route path="/security" element={<ProtectedRoute><Security /></ProtectedRoute>} />
           <Route path="/automation" element={<ProtectedRoute><Automation /></ProtectedRoute>} />
           <Route path="/troubleshoot" element={<ProtectedRoute><Troubleshoot /></ProtectedRoute>} />
+          <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
           <Route path="/upgrade" element={<ProtectedRoute><Upgrade /></ProtectedRoute>} />
           <Route path="/pricing" element={<Pricing />} />
           <Route path="/checkout/success" element={<CheckoutSuccess />} />
