@@ -14,6 +14,25 @@ NC='\033[0m'
 echo -e "${BOLD}${CYAN}=== NixPanel Deploy ===${NC}"
 echo ""
 
+# Step 0: Version bump
+CURRENT_VERSION="$(node -p "require('./package.json').version")"
+echo -e "Current version: ${BOLD}${CURRENT_VERSION}${NC}"
+echo -e "Bump type: ${BOLD}[1]${NC} patch  ${BOLD}[2]${NC} minor  ${BOLD}[3]${NC} major  ${BOLD}[s]${NC} skip"
+read -rp "Choice [1]: " BUMP_CHOICE
+BUMP_CHOICE="${BUMP_CHOICE:-1}"
+
+case "$BUMP_CHOICE" in
+  1|patch)  npm version patch --no-git-tag-version ;;
+  2|minor)  npm version minor --no-git-tag-version ;;
+  3|major)  npm version major --no-git-tag-version ;;
+  s|skip)   echo -e "${YELLOW}Skipping version bump.${NC}" ;;
+  *)        echo -e "${RED}Invalid choice, skipping version bump.${NC}" ;;
+esac
+
+NEW_VERSION="$(node -p "require('./package.json').version")"
+[[ "$NEW_VERSION" != "$CURRENT_VERSION" ]] && echo -e "${GREEN}Version bumped to ${BOLD}${NEW_VERSION}${NC}"
+echo ""
+
 # Step 1: Check for uncommitted changes
 if [[ -n "$(git status --porcelain)" ]]; then
   echo -e "${YELLOW}Uncommitted changes detected:${NC}"

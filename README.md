@@ -14,6 +14,7 @@ A modern, open-core web-based Linux administration panel. The core is free and o
 | Service Manager | ✅ | ✅ |
 | Log Viewer | ✅ | ✅ |
 | File Browser | ✅ | ✅ |
+| Settings | ✅ | ✅ |
 | AI Assistant (Chat) | ➖ | ✅ |
 | AI Troubleshoot & Diagnostics | ➖ | ✅ |
 | Firewall Management (UFW/iptables) | ➖ | ✅ |
@@ -71,31 +72,6 @@ To activate:
 3. Enter your license key and click **Activate License**
 
 Pro features are unlocked immediately. Activation works offline if the license server is unreachable.
-
-## Self-Hosted License Server
-
-If you want to run your own license validation server (for air-gapped environments or white-label deployments):
-
-```bash
-cd license-server
-cp .env.example .env
-# Set ADMIN_API_KEY to a strong random string
-npm install
-npm start
-```
-
-Update `LICENSE_SERVER` in `server/routes/license.js` to point to your server.
-
-Create licenses via the admin API:
-
-```bash
-curl -X POST http://localhost:4000/admin/licenses \
-  -H "X-Admin-Key: your_key" \
-  -H "Content-Type: application/json" \
-  -d '{"email": "user@example.com", "plan": "pro"}'
-```
-
-See `license-server/README.md` for full documentation.
 
 ## Contributing
 

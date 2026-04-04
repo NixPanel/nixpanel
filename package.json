@@ -1,6 +1,6 @@
 {
   "name": "nixpanel-server",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "NixPanel - Web-based Linux System Administration Panel",
   "main": "server/index.js",
   "scripts": {
