@@ -9,5 +9,10 @@ npm-debug.log
 dist/
 release/
 *.tar.gz
+*.sha256
 deploy.sh
 license-server/
+releases/
+main
+vite
+nixpanel-client@1.0.0
